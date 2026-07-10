@@ -9,12 +9,39 @@ export interface Usage {
 export interface ModelResponse {
   model: string;
   content: string;
+  finishReason?: string | null;
+  usage?: Usage | null;
+  error?: string | null;
+}
+
+export interface LogEntry {
+  ts: number;
+  durationMs: number;
+  kind: 'model' | 'synthesis' | 'retry';
+  model: string;
+  genId: string | null;
+  provider: string | null;
+  status: 'ok' | 'error' | 'truncated';
+  finishReason: string | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  cost: number | null;
+  error?: string;
+}
+
+export interface FusionMeta {
+  finishReason?: string | null;
+  usage?: Usage | null;
+  error?: string | null;
+  skipped?: 'all-failed' | 'single' | null;
 }
 
 export interface Turn {
   userMessage: string;
   modelResponses: ModelResponse[];
   fusedResponse: string;
+  fusion?: FusionMeta;
+  calls?: LogEntry[];
 }
 
 export interface FusionRun {
@@ -97,4 +124,9 @@ export function formatDate(ts: number): string {
   const diffDays = Math.floor(diffHours / 24);
   if (diffDays < 7) return `${diffDays}d ago`;
   return d.toLocaleDateString();
+}
+
+export function formatUsage(u: Usage | null | undefined): string {
+  if (!u) return '';
+  return `${u.promptTokens.toLocaleString('en-US')}→${u.completionTokens.toLocaleString('en-US')} tok · $${u.cost.toFixed(4)}`;
 }

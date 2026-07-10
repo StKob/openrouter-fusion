@@ -1,4 +1,4 @@
-import type { Turn, ModelResponse, Usage } from './storage';
+import type { Turn, ModelResponse, Usage, LogEntry } from './storage';
 
 // ─── Model List ───────────────────────────────────────────────────────────────
 
@@ -94,6 +94,23 @@ export function splitSSEBuffer(buffer: string): { lines: string[]; rest: string 
   const lines = buffer.split('\n');
   const rest = lines.pop() ?? '';
   return { lines, rest };
+}
+
+export function buildLogEntry(kind: LogEntry['kind'], model: string, r: StreamResult): LogEntry {
+  return {
+    ts: r.startedAt,
+    durationMs: r.durationMs,
+    kind,
+    model,
+    genId: r.genId,
+    provider: r.provider,
+    status: r.error ? 'error' : r.finishReason === 'length' ? 'truncated' : 'ok',
+    finishReason: r.finishReason,
+    promptTokens: r.usage?.promptTokens ?? null,
+    completionTokens: r.usage?.completionTokens ?? null,
+    cost: r.usage?.cost ?? null,
+    ...(r.error ? { error: r.error } : {}),
+  };
 }
 
 // ─── Streaming ────────────────────────────────────────────────────────────────

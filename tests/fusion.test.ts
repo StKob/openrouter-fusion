@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { applyChunk, buildMessages, newStreamResult, splitSSEBuffer } from '../src/scripts/fusion';
+import { applyChunk, buildLogEntry, buildMessages, newStreamResult, splitSSEBuffer } from '../src/scripts/fusion';
+import { formatUsage } from '../src/scripts/storage';
 
 describe('applyChunk', () => {
   it('accumulates delta content and returns the delta', () => {
@@ -80,5 +81,39 @@ describe('buildMessages', () => {
   it('omits system message when prompt is empty', () => {
     const m = buildMessages('', [], 'q');
     expect(m).toEqual([{ role: 'user', content: 'q' }]);
+  });
+});
+
+describe('buildLogEntry', () => {
+  const base = { content: 'x', finishReason: 'stop', usage: { promptTokens: 10, completionTokens: 20, cost: 0.003 }, error: null, genId: 'gen-1', provider: 'OpenAI', startedAt: 1000, durationMs: 250 };
+
+  it('maps an ok result', () => {
+    expect(buildLogEntry('model', 'openai/gpt-4o', { ...base })).toEqual({
+      ts: 1000, durationMs: 250, kind: 'model', model: 'openai/gpt-4o',
+      genId: 'gen-1', provider: 'OpenAI', status: 'ok', finishReason: 'stop',
+      promptTokens: 10, completionTokens: 20, cost: 0.003,
+    });
+  });
+
+  it('marks errors and includes the error text', () => {
+    const e = buildLogEntry('retry', 'm', { ...base, error: 'boom', usage: null });
+    expect(e.status).toBe('error');
+    expect(e.error).toBe('boom');
+    expect(e.promptTokens).toBeNull();
+    expect(e.cost).toBeNull();
+  });
+
+  it('marks finish_reason length as truncated', () => {
+    expect(buildLogEntry('synthesis', 'm', { ...base, finishReason: 'length' }).status).toBe('truncated');
+  });
+});
+
+describe('formatUsage', () => {
+  it('formats tokens and cost', () => {
+    expect(formatUsage({ promptTokens: 1234, completionTokens: 567, cost: 0.0042 })).toBe('1,234→567 tok · $0.0042');
+  });
+  it('returns empty string for missing usage', () => {
+    expect(formatUsage(null)).toBe('');
+    expect(formatUsage(undefined)).toBe('');
   });
 });
