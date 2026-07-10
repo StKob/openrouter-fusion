@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyChunk, newStreamResult, splitSSEBuffer } from '../src/scripts/fusion';
+import { applyChunk, buildMessages, newStreamResult, splitSSEBuffer } from '../src/scripts/fusion';
 
 describe('applyChunk', () => {
   it('accumulates delta content and returns the delta', () => {
@@ -63,5 +63,22 @@ describe('splitSSEBuffer', () => {
     const { lines, rest } = splitSSEBuffer('data: a\n');
     expect(lines).toEqual(['data: a']);
     expect(rest).toBe('');
+  });
+});
+
+describe('buildMessages', () => {
+  it('includes system prompt when present', () => {
+    const m = buildMessages('be brief', [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }], 'q');
+    expect(m).toEqual([
+      { role: 'system', content: 'be brief' },
+      { role: 'user', content: 'a' },
+      { role: 'assistant', content: 'b' },
+      { role: 'user', content: 'q' },
+    ]);
+  });
+
+  it('omits system message when prompt is empty', () => {
+    const m = buildMessages('', [], 'q');
+    expect(m).toEqual([{ role: 'user', content: 'q' }]);
   });
 });

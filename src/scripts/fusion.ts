@@ -98,15 +98,25 @@ export function splitSSEBuffer(buffer: string): { lines: string[]; rest: string 
 
 // ─── Streaming ────────────────────────────────────────────────────────────────
 
+export function buildMessages(
+  systemPrompt: string,
+  conversationHistory: { role: string; content: string }[],
+  userMessage: string
+): { role: string; content: string }[] {
+  const messages: { role: string; content: string }[] = [];
+  if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+  messages.push(...conversationHistory);
+  messages.push({ role: 'user', content: userMessage });
+  return messages;
+}
+
 export async function streamCompletion(
   apiKey: string,
   model: string,
   messages: { role: string; content: string }[],
-  onChunk: (text: string) => void,
-  onDone: () => void,
-  onError: (err: string) => void
-): Promise<string> {
-  let full = '';
+  onChunk: (text: string) => void
+): Promise<StreamResult> {
+  const acc = newStreamResult();
   try {
     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -116,13 +126,13 @@ export async function streamCompletion(
         'HTTP-Referer': window.location.origin,
         'X-Title': 'OpenRouter Fusion Replica',
       },
-      body: JSON.stringify({ model, messages, stream: true }),
+      body: JSON.stringify({ model, messages, stream: true, usage: { include: true } }),
     });
 
     if (!res.ok) {
-      const errText = await res.text();
-      onError(`[${res.status}] ${errText}`);
-      return full;
+      acc.error = `[${res.status}] ${await res.text()}`;
+      acc.durationMs = Date.now() - acc.startedAt;
+      return acc;
     }
 
     const reader = res.body!.getReader();
@@ -133,29 +143,23 @@ export async function streamCompletion(
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
+      const { lines, rest } = splitSSEBuffer(buffer);
+      buffer = rest;
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed || !trimmed.startsWith('data: ')) continue;
-        const data = trimmed.slice(6);
-        if (data === '[DONE]') continue;
-        try {
-          const json = JSON.parse(data);
-          const delta = json.choices?.[0]?.delta?.content;
-          if (delta) {
-            full += delta;
-            onChunk(delta);
-          }
-        } catch {}
+        const delta = applyChunk(acc, trimmed.slice(6));
+        if (delta) onChunk(delta);
+        if (acc.error) break;
       }
+      if (acc.error) break;
     }
-    onDone();
+    if (acc.error) { try { await reader.cancel(); } catch {} }
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    onError(msg);
+    acc.error = err instanceof Error ? err.message : String(err);
   }
-  return full;
+  acc.durationMs = Date.now() - acc.startedAt;
+  return acc;
 }
 
 // ─── Fusion ───────────────────────────────────────────────────────────────────
