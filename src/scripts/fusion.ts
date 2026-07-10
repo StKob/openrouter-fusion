@@ -1,4 +1,4 @@
-import type { Turn, ModelResponse } from './storage';
+import type { Turn, ModelResponse, Usage } from './storage';
 
 // ─── Model List ───────────────────────────────────────────────────────────────
 
@@ -42,6 +42,59 @@ export const PRESETS = {
     'google/gemini-flash-1.5',
   ],
 };
+
+// ─── Stream result ────────────────────────────────────────────────────────────
+
+export interface StreamResult {
+  content: string;
+  finishReason: string | null;
+  usage: Usage | null;
+  error: string | null;
+  genId: string | null;
+  provider: string | null;
+  startedAt: number;
+  durationMs: number;
+}
+
+export function newStreamResult(): StreamResult {
+  return {
+    content: '', finishReason: null, usage: null, error: null,
+    genId: null, provider: null, startedAt: Date.now(), durationMs: 0,
+  };
+}
+
+// Applies one SSE `data:` payload to the accumulating result.
+// Returns the text delta if the chunk carried one, else null.
+export function applyChunk(acc: StreamResult, data: string): string | null {
+  if (data === '[DONE]') return null;
+  let json: any;
+  try { json = JSON.parse(data); } catch { return null; }
+  if (json.error) {
+    acc.error = typeof json.error === 'string' ? json.error : (json.error.message ?? JSON.stringify(json.error));
+    return null;
+  }
+  if (json.id && !acc.genId) acc.genId = json.id;
+  if (json.provider && !acc.provider) acc.provider = json.provider;
+  const choice = json.choices?.[0];
+  if (choice?.finish_reason) acc.finishReason = choice.finish_reason;
+  if (json.usage) {
+    acc.usage = {
+      promptTokens: json.usage.prompt_tokens ?? 0,
+      completionTokens: json.usage.completion_tokens ?? 0,
+      cost: json.usage.cost ?? 0,
+    };
+  }
+  const delta = choice?.delta?.content;
+  if (delta) { acc.content += delta; return delta; }
+  return null;
+}
+
+// Splits an SSE text buffer into complete lines + the trailing partial line.
+export function splitSSEBuffer(buffer: string): { lines: string[]; rest: string } {
+  const lines = buffer.split('\n');
+  const rest = lines.pop() ?? '';
+  return { lines, rest };
+}
 
 // ─── Streaming ────────────────────────────────────────────────────────────────
 

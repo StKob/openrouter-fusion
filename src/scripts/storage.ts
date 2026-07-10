@@ -1,5 +1,11 @@
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+export interface Usage {
+  promptTokens: number;
+  completionTokens: number;
+  cost: number;
+}
+
 export interface ModelResponse {
   model: string;
   content: string;
