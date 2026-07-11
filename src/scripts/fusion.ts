@@ -1,4 +1,4 @@
-import type { Turn, ModelResponse, Usage, LogEntry } from './storage';
+import type { ModelResponse, Usage, LogEntry } from './storage';
 
 // ─── Model List ───────────────────────────────────────────────────────────────
 
@@ -181,12 +181,31 @@ export async function streamCompletion(
 
 // ─── Fusion ───────────────────────────────────────────────────────────────────
 
-export function buildFusionPrompt(
-  userMessage: string,
-  responses: ModelResponse[]
-): string {
+export function partitionResponses(responses: ModelResponse[]): { ok: ModelResponse[]; failed: ModelResponse[] } {
+  const ok: ModelResponse[] = [];
+  const failed: ModelResponse[] = [];
+  for (const r of responses) (r.content.trim() && !r.error ? ok : failed).push(r);
+  return { ok, failed };
+}
+
+export type SynthesisDecision =
+  | { mode: 'run'; responses: ModelResponse[] }
+  | { mode: 'single'; response: ModelResponse }
+  | { mode: 'all-failed' };
+
+export function decideSynthesis(responses: ModelResponse[]): SynthesisDecision {
+  const { ok } = partitionResponses(responses);
+  if (ok.length === 0) return { mode: 'all-failed' };
+  if (ok.length === 1) return { mode: 'single', response: ok[0]! };
+  return { mode: 'run', responses: ok };
+}
+
+export function buildFusionPrompt(userMessage: string, responses: ModelResponse[]): string {
   const parts = responses
-    .map((r, i) => `### Response ${i + 1} (${r.model})\n${r.content}`)
+    .map((r, i) => {
+      const note = r.finishReason === 'length' ? ' (cut off mid-generation)' : '';
+      return `### Response ${i + 1} (${r.model})${note}\n${r.content}`;
+    })
     .join('\n\n');
 
   return `You are a synthesis AI. You have been given multiple AI model responses to the same user question. Your task is to analyze all responses and produce a single, comprehensive, well-structured answer that:
@@ -205,60 +224,58 @@ ${parts}
 Synthesize the above responses into the definitive best answer:`;
 }
 
+export interface SynthesisOutcome {
+  fusedContent: string;
+  result: StreamResult | null;           // null when no API call was made
+  skipped: 'all-failed' | 'single' | null;
+  model: string | null;                  // model id actually called for synthesis
+}
+
+export async function runSynthesis(
+  apiKey: string,
+  fusionModel: string,
+  models: string[],
+  userMessage: string,
+  responses: ModelResponse[],
+  onChunk: (text: string) => void
+): Promise<SynthesisOutcome> {
+  const decision = decideSynthesis(responses);
+  if (decision.mode === 'all-failed') return { fusedContent: '', result: null, skipped: 'all-failed', model: null };
+  if (decision.mode === 'single') return { fusedContent: decision.response.content, result: null, skipped: 'single', model: null };
+  const fusionModelId = fusionModel === 'auto' ? models[0]! : fusionModel;
+  const messages = [{ role: 'user', content: buildFusionPrompt(userMessage, decision.responses) }];
+  const result = await streamCompletion(apiKey, fusionModelId, messages, onChunk);
+  return { fusedContent: result.content, result, skipped: null, model: fusionModelId };
+}
+
 export async function runFusion(params: {
   apiKey: string;
   models: string[];
-  systemPrompt: string;
-  conversationHistory: { role: string; content: string }[];
+  messages: { role: string; content: string }[];
   userMessage: string;
   fusionModel: string;
   onModelChunk: (model: string, chunk: string) => void;
-  onModelDone: (model: string) => void;
-  onModelError: (model: string, err: string) => void;
+  onModelDone: (model: string, result: StreamResult) => void;
   onFusionChunk: (chunk: string) => void;
-  onFusionDone: () => void;
-  onFusionError: (err: string) => void;
-}): Promise<Turn> {
-  const {
-    apiKey, models, systemPrompt, conversationHistory,
-    userMessage, fusionModel,
-    onModelChunk, onModelDone, onModelError,
-    onFusionChunk, onFusionDone, onFusionError,
-  } = params;
+  onFusionDone: (outcome: SynthesisOutcome) => void;
+}): Promise<void> {
+  const { apiKey, models, messages, userMessage, fusionModel,
+    onModelChunk, onModelDone, onFusionChunk, onFusionDone } = params;
 
-  const messages: { role: string; content: string }[] = [];
-  if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
-  messages.push(...conversationHistory);
-  messages.push({ role: 'user', content: userMessage });
-
-  // Run all models in parallel
-  const modelResults = await Promise.all(
+  const responses: ModelResponse[] = await Promise.all(
     models.map(async (model) => {
-      const content = await streamCompletion(
-        apiKey, model, messages,
-        (chunk) => onModelChunk(model, chunk),
-        () => onModelDone(model),
-        (err) => onModelError(model, err)
-      );
-      return { model, content };
+      const result = await streamCompletion(apiKey, model, messages, (c) => onModelChunk(model, c));
+      onModelDone(model, result);
+      return {
+        model,
+        content: result.content,
+        finishReason: result.finishReason,
+        usage: result.usage,
+        error: result.error,
+      };
     })
   );
 
-  // Fusion synthesis
-  const fusionMsgContent = buildFusionPrompt(userMessage, modelResults);
-  const fusionMessages = [{ role: 'user', content: fusionMsgContent }];
-  const fusionModelId = fusionModel === 'auto' ? models[0] : fusionModel;
-
-  const fusedResponse = await streamCompletion(
-    apiKey, fusionModelId!, fusionMessages,
-    onFusionChunk,
-    onFusionDone,
-    onFusionError
-  );
-
-  return {
-    userMessage,
-    modelResponses: modelResults,
-    fusedResponse,
-  };
+  const outcome = await runSynthesis(apiKey, fusionModel, models, userMessage, responses, onFusionChunk);
+  onFusionDone(outcome);
 }

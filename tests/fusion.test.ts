@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyChunk, buildLogEntry, buildMessages, newStreamResult, splitSSEBuffer } from '../src/scripts/fusion';
+import { applyChunk, buildLogEntry, buildMessages, newStreamResult, splitSSEBuffer, partitionResponses, decideSynthesis, buildFusionPrompt } from '../src/scripts/fusion';
 import { formatUsage } from '../src/scripts/storage';
 
 describe('applyChunk', () => {
@@ -105,6 +105,43 @@ describe('buildLogEntry', () => {
 
   it('marks finish_reason length as truncated', () => {
     expect(buildLogEntry('synthesis', 'm', { ...base, finishReason: 'length' }).status).toBe('truncated');
+  });
+});
+
+const ok1 = { model: 'a/one', content: 'Answer one', finishReason: 'stop', error: null };
+const ok2 = { model: 'b/two', content: 'Answer two', finishReason: 'stop', error: null };
+const truncated = { model: 'c/three', content: 'Cut off answ', finishReason: 'length', error: null };
+const failed = { model: 'd/four', content: '', finishReason: null, error: '[500] boom' };
+const emptyOk = { model: 'e/five', content: '   ', finishReason: 'stop', error: null };
+
+describe('partitionResponses', () => {
+  it('separates ok from failed/empty', () => {
+    const { ok, failed: bad } = partitionResponses([ok1, failed, emptyOk, truncated]);
+    expect(ok.map((r) => r.model)).toEqual(['a/one', 'c/three']);
+    expect(bad.map((r) => r.model)).toEqual(['d/four', 'e/five']);
+  });
+});
+
+describe('decideSynthesis', () => {
+  it('all failed → all-failed', () => {
+    expect(decideSynthesis([failed, emptyOk])).toEqual({ mode: 'all-failed' });
+  });
+  it('single survivor → single with that response', () => {
+    expect(decideSynthesis([ok1, failed])).toEqual({ mode: 'single', response: ok1 });
+  });
+  it('two+ ok → run with only ok responses', () => {
+    const d = decideSynthesis([ok1, failed, ok2]);
+    expect(d.mode).toBe('run');
+    if (d.mode === 'run') expect(d.responses).toEqual([ok1, ok2]);
+  });
+});
+
+describe('buildFusionPrompt', () => {
+  it('numbers responses, includes content, labels truncated ones', () => {
+    const p = buildFusionPrompt('the question', [ok1, truncated]);
+    expect(p).toContain('## User Question\nthe question');
+    expect(p).toContain('### Response 1 (a/one)\nAnswer one');
+    expect(p).toContain('### Response 2 (c/three) (cut off mid-generation)\nCut off answ');
   });
 });
 
