@@ -130,3 +130,47 @@ export function formatUsage(u: Usage | null | undefined): string {
   if (!u) return '';
   return `${u.promptTokens.toLocaleString('en-US')}→${u.completionTokens.toLocaleString('en-US')} tok · $${u.cost.toFixed(4)}`;
 }
+
+// ─── Export / disk formats ────────────────────────────────────────────────────
+
+export function slugify(s: string): string {
+  const slug = s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  return slug || 'untitled';
+}
+
+export function runFilename(run: FusionRun): string {
+  const d = new Date(run.createdAt);
+  const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return `${date}-${run.id.slice(0, 8)}-${slugify(run.title)}.md`;
+}
+
+export function runToMarkdown(run: FusionRun): string {
+  const lines: string[] = [];
+  lines.push(`# ${run.title}`, '');
+  lines.push(`- **Created:** ${new Date(run.createdAt).toISOString()}`);
+  lines.push(`- **Models:** ${run.models.join(', ')}`);
+  if (run.systemPrompt) lines.push(`- **System prompt:** ${run.systemPrompt}`);
+  lines.push('');
+  run.turns.forEach((turn, i) => {
+    lines.push(`## Turn ${i + 1}`, '', '### User', '', turn.userMessage, '');
+    for (const r of turn.modelResponses) {
+      const status = r.error ? `error: ${r.error}` : r.finishReason === 'length' ? 'truncated' : 'ok';
+      const usage = formatUsage(r.usage);
+      lines.push(`### ${r.model} (${status}${usage ? ` · ${usage}` : ''})`, '', r.content || '_(no content)_', '');
+    }
+    lines.push(`### Fused answer${turn.fusion?.skipped ? ` (synthesis skipped: ${turn.fusion.skipped})` : ''}`, '');
+    lines.push(turn.fusedResponse || '_(none)_', '');
+    if (turn.calls?.length) {
+      lines.push('#### Call log', '');
+      lines.push('| time | kind | model | genId | status | tokens | cost |');
+      lines.push('|---|---|---|---|---|---|---|');
+      for (const c of turn.calls) {
+        const tokens = c.promptTokens != null ? `${c.promptTokens}→${c.completionTokens}` : '';
+        const cost = c.cost != null ? `$${c.cost.toFixed(4)}` : '';
+        lines.push(`| ${new Date(c.ts).toISOString()} | ${c.kind} | ${c.model} | ${c.genId ?? ''} | ${c.status} | ${tokens} | ${cost} |`);
+      }
+      lines.push('');
+    }
+  });
+  return lines.join('\n');
+}

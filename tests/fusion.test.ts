@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { applyChunk, buildLogEntry, buildMessages, newStreamResult, splitSSEBuffer, partitionResponses, decideSynthesis, buildFusionPrompt } from '../src/scripts/fusion';
-import { formatUsage } from '../src/scripts/storage';
+import { formatUsage, slugify, runFilename, runToMarkdown } from '../src/scripts/storage';
+import type { FusionRun } from '../src/scripts/storage';
 
 describe('applyChunk', () => {
   it('accumulates delta content and returns the delta', () => {
@@ -152,5 +153,64 @@ describe('formatUsage', () => {
   it('returns empty string for missing usage', () => {
     expect(formatUsage(null)).toBe('');
     expect(formatUsage(undefined)).toBe('');
+  });
+});
+
+const sampleRun: FusionRun = {
+  id: 'abcd1234-9999-4444-8888-121212121212',
+  title: 'What is TypeScript?',
+  createdAt: new Date('2026-07-10T12:00:00Z').getTime(),
+  models: ['a/one', 'b/two'],
+  systemPrompt: '',
+  turns: [{
+    userMessage: 'What is TypeScript?',
+    modelResponses: [
+      { model: 'a/one', content: 'A typed superset of JS.', finishReason: 'stop', usage: { promptTokens: 10, completionTokens: 20, cost: 0.001 }, error: null },
+      { model: 'b/two', content: '', finishReason: null, usage: null, error: '[502] provider died' },
+    ],
+    fusedResponse: 'TypeScript adds types to JavaScript.',
+    fusion: { finishReason: 'stop', usage: { promptTokens: 50, completionTokens: 30, cost: 0.002 }, error: null, skipped: null },
+    calls: [
+      { ts: 1752148800000, durationMs: 900, kind: 'model', model: 'a/one', genId: 'gen-111', provider: 'ProvA', status: 'ok', finishReason: 'stop', promptTokens: 10, completionTokens: 20, cost: 0.001 },
+      { ts: 1752148801000, durationMs: 100, kind: 'model', model: 'b/two', genId: null, provider: null, status: 'error', finishReason: null, promptTokens: null, completionTokens: null, cost: null, error: '[502] provider died' },
+      { ts: 1752148802000, durationMs: 800, kind: 'synthesis', model: 'a/one', genId: 'gen-333', provider: 'ProvA', status: 'ok', finishReason: 'stop', promptTokens: 50, completionTokens: 30, cost: 0.002 },
+    ],
+  }],
+};
+
+describe('slugify', () => {
+  it('lowercases and dashes non-alphanumerics', () => {
+    expect(slugify('What is TypeScript?')).toBe('what-is-typescript');
+  });
+  it('falls back to untitled', () => {
+    expect(slugify('???')).toBe('untitled');
+  });
+  it('caps length at 40', () => {
+    expect(slugify('x'.repeat(80)).length).toBeLessThanOrEqual(40);
+  });
+});
+
+describe('runFilename', () => {
+  it('builds date-id8-slug.md', () => {
+    expect(runFilename(sampleRun)).toMatch(/^2026-07-10-abcd1234-what-is-typescript\.md$/);
+  });
+});
+
+describe('runToMarkdown', () => {
+  it('contains title, user message, statuses, fused answer, and the log table with genId', () => {
+    const md = runToMarkdown(sampleRun);
+    expect(md).toContain('# What is TypeScript?');
+    expect(md).toContain('### User');
+    expect(md).toContain('What is TypeScript?');
+    expect(md).toContain('### a/one (ok · 10→20 tok · $0.0010)');
+    expect(md).toContain('### b/two (error: [502] provider died)');
+    expect(md).toContain('TypeScript adds types to JavaScript.');
+    expect(md).toContain('| gen-111 |');
+    expect(md).toContain('| synthesis |');
+  });
+
+  it('notes skipped synthesis', () => {
+    const run = { ...sampleRun, turns: [{ ...sampleRun.turns[0]!, fusion: { skipped: 'all-failed' as const } }] };
+    expect(runToMarkdown(run)).toContain('### Fused answer (synthesis skipped: all-failed)');
   });
 });
