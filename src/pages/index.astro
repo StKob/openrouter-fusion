@@ -268,11 +268,12 @@ import Layout from '../layouts/Layout.astro';
 </Layout>
 
 <script>
-  import { getSettings, saveSettings, getRuns, saveRun, deleteRun, createRun, formatDate } from '../scripts/storage';
-  import type { FusionRun, Turn, Settings } from '../scripts/storage';
-  import { fetchModels, runFusion, PRESETS, clearModelCache } from '../scripts/fusion';
+  import { getSettings, saveSettings, getRuns, saveRun, deleteRun, createRun, formatDate, formatUsage, runToMarkdown, runFilename } from '../scripts/storage';
+  import type { FusionRun, Turn, Settings, ModelResponse } from '../scripts/storage';
+  import { fetchModels, runFusion, runSynthesis, streamCompletion, buildMessages, buildLogEntry, PRESETS, clearModelCache } from '../scripts/fusion';
   import type { ORModel } from '../scripts/fusion';
   import { initTheme, toggleTheme, applyTheme } from '../scripts/theme';
+  import { diskSupported, pickFolder, diskState, reenableDisk, writeRunFile } from '../scripts/disksave';
 
   // ─── State ────────────────────────────────────────────────────────────────────
   let activeRun: FusionRun | null = null;
@@ -281,6 +282,9 @@ import Layout from '../layouts/Layout.astro';
   let allModels: ORModel[] = [];
   let isStreaming = false;
   let currentSettings: Settings = getSettings();
+  let lastMessages: { role: string; content: string }[] | null = null;
+  let diskActive = false;
+  let lastPartialSave = 0;
 
   function init() {
   // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -305,6 +309,114 @@ import Layout from '../layouts/Layout.astro';
   const $modalSettings = document.getElementById('modal-settings')!;
   const $settingsApiKey = document.getElementById('settings-api-key') as HTMLInputElement;
   const $settingsFusionModel = document.getElementById('settings-fusion-model') as HTMLSelectElement;
+
+  // ─── Persistence ─────────────────────────────────────────────────────────────
+  function showDiskWarning(text: string) {
+    console.warn(text); // ponytail: replaced by the banner UI in the disk-UI task
+  }
+
+  function persist(level: 'partial' | 'complete') {
+    if (!activeRun) return;
+    saveRun(activeRun);
+    if (level === 'complete' && diskActive) {
+      writeRunFile(runFilename(activeRun), runToMarkdown(activeRun)).catch((err) => {
+        showDiskWarning(`Disk save failed: ${err?.message ?? err}`);
+      });
+    }
+  }
+
+  function throttledPartialSave() {
+    const now = Date.now();
+    if (now - lastPartialSave < 2000) return;
+    lastPartialSave = now;
+    persist('partial');
+  }
+
+  function upsertResponse(turn: Turn, model: string, patch: ModelResponse) {
+    const idx = turn.modelResponses.findIndex((r) => r.model === model);
+    if (idx >= 0) turn.modelResponses[idx] = { ...turn.modelResponses[idx], ...patch };
+    else turn.modelResponses.push(patch);
+  }
+
+  // ─── Result rendering ─────────────────────────────────────────────────────────
+  function respStatus(r: ModelResponse): 'ok' | 'error' | 'truncated' {
+    return r.error ? 'error' : r.finishReason === 'length' ? 'truncated' : 'ok';
+  }
+
+  function statusBadge(status: 'ok' | 'error' | 'truncated', finishReason: string | null | undefined): string {
+    if (status === 'error') return `<span class="text-[10px] px-1.5 py-0.5 rounded bg-red-500/15 text-red-500 font-medium">error</span>`;
+    if (status === 'truncated') return `<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-500 font-medium">${escapeHtml(finishReason ?? 'truncated')}</span>`;
+    return '';
+  }
+
+  function renderModelCardResult(turnEl: HTMLElement, model: string, turn: Turn, isLast: boolean) {
+    const r = turn.modelResponses.find((x) => x.model === model);
+    if (!r) return;
+    const contentEl = turnEl.querySelector(`[data-model-content="${model}"]`);
+    if (contentEl) {
+      contentEl.innerHTML = r.error
+        ? `<span class="text-red-400 text-xs">Error: ${escapeHtml(r.error)}</span>` +
+          (r.content ? '<hr class="my-2 opacity-30">' + renderMarkdownLite(r.content) : '')
+        : renderMarkdownLite(r.content);
+    }
+    const footEl = turnEl.querySelector(`[data-model-foot="${model}"]`);
+    if (footEl) {
+      const status = respStatus(r);
+      const retry = isLast && status !== 'ok'
+        ? `<button data-retry-model="${model}" class="text-[11px] px-2 py-0.5 rounded border border-or-accent/40 text-or-accent hover:bg-or-accent/10 transition-colors">Retry</button>`
+        : '';
+      footEl.innerHTML = `
+        <div class="flex items-center gap-2">
+          ${statusBadge(status, r.finishReason)}
+          <span class="text-[10px] text-gray-400 dark:text-or-muted">${formatUsage(r.usage)}</span>
+          <span class="ml-auto"></span>
+          ${retry}
+        </div>`;
+    }
+    updateTurnCost(turnEl, turn);
+  }
+
+  function renderFusedResult(turnEl: HTMLElement, turn: Turn, isLast: boolean) {
+    const el = turnEl.querySelector('[data-fused-content]');
+    if (el) {
+      if (turn.fusion?.error) {
+        el.innerHTML = `<span class="text-red-400 text-xs">Fusion error: ${escapeHtml(turn.fusion.error)}</span>`;
+      } else if (turn.fusion?.skipped === 'all-failed') {
+        el.innerHTML = `<span class="text-amber-500 text-xs">All models failed — synthesis skipped (not billed).</span>`;
+      } else {
+        const note = turn.fusion?.skipped === 'single'
+          ? `<div class="text-[11px] text-gray-400 dark:text-or-muted mb-2">Single successful response — synthesis skipped.</div>`
+          : '';
+        el.innerHTML = note + renderMarkdownLite(turn.fusedResponse);
+      }
+    }
+    const footEl = turnEl.querySelector('[data-fused-foot]');
+    if (footEl) {
+      const f = turn.fusion;
+      const notClean = !!(f && (f.error || f.finishReason === 'length' || f.skipped));
+      const badge = f?.error ? statusBadge('error', null)
+        : f?.finishReason === 'length' ? statusBadge('truncated', f.finishReason)
+        : '';
+      const retry = isLast && notClean
+        ? `<button data-retry-fusion class="text-[11px] px-2 py-0.5 rounded border border-or-accent/40 text-or-accent hover:bg-or-accent/10 transition-colors">${f?.skipped ? 'Run synthesis' : 'Retry synthesis'}</button>`
+        : '';
+      footEl.innerHTML = `
+        <div class="flex items-center gap-2">
+          ${badge}
+          <span class="text-[10px] text-gray-400 dark:text-or-muted">${formatUsage(f?.usage)}</span>
+          <span data-turn-cost class="ml-auto text-[10px] text-gray-400 dark:text-or-muted"></span>
+          ${retry}
+        </div>`;
+    }
+    updateTurnCost(turnEl, turn);
+  }
+
+  function updateTurnCost(turnEl: HTMLElement, turn: Turn) {
+    const el = turnEl.querySelector('[data-turn-cost]');
+    if (!el) return;
+    const total = (turn.calls ?? []).reduce((s, c) => s + (c.cost ?? 0), 0);
+    el.textContent = total > 0 ? `turn total $${total.toFixed(4)}` : '';
+  }
 
   // ─── Navigation ───────────────────────────────────────────────────────────────
   function showWelcome() {
@@ -607,81 +719,90 @@ import Layout from '../layouts/Layout.astro';
 
     // Build conversation history (flatten prior turns for context)
     const history: { role: string; content: string }[] = [];
-    for (const turn of activeRun.turns) {
-      history.push({ role: 'user', content: turn.userMessage });
-      // Use fused response as the assistant reply in history context
-      if (turn.fusedResponse) {
-        history.push({ role: 'assistant', content: turn.fusedResponse });
-      }
+    for (const t of activeRun.turns) {
+      history.push({ role: 'user', content: t.userMessage });
+      if (t.fusedResponse) history.push({ role: 'assistant', content: t.fusedResponse });
     }
+    const messages = buildMessages($systemPrompt.value, history, message);
+    lastMessages = messages;
 
-    // Create a placeholder turn UI
+    // The page owns the turn: create it up front, pre-seeded per model, persist immediately
     const turnIdx = activeRun.turns.length;
+    const turn: Turn = {
+      userMessage: message,
+      modelResponses: selectedModels.map((m) => ({ model: m, content: '' })),
+      fusedResponse: '',
+      calls: [],
+    };
+    activeRun.turns.push(turn);
+    persist('partial');
+    renderRunList();
+
     const turnEl = createTurnElement(message, selectedModels, turnIdx);
     $turnsContainer.appendChild(turnEl);
     scrollBottom();
 
-    // Model response buffers
     const modelBuffers: Record<string, string> = {};
-    selectedModels.forEach(m => { modelBuffers[m] = ''; });
+    selectedModels.forEach((m) => { modelBuffers[m] = ''; });
+    let fusionBuffer = '';
 
     try {
-      const turn = await runFusion({
+      await runFusion({
         apiKey: settings.apiKey,
         models: selectedModels,
-        systemPrompt: $systemPrompt.value,
-        conversationHistory: history,
+        messages,
         userMessage: message,
         fusionModel: $fusionModelSelect.value || settings.fusionModel || 'auto',
         onModelChunk: (model, chunk) => {
           modelBuffers[model] += chunk;
+          upsertResponse(turn, model, { model, content: modelBuffers[model] });
           const el = turnEl.querySelector(`[data-model-content="${model}"]`);
-          if (el) {
-            el.innerHTML = renderMarkdownLite(modelBuffers[model]) + '<span class="animate-blink">▌</span>';
-          }
+          if (el) el.innerHTML = renderMarkdownLite(modelBuffers[model]) + '<span class="animate-blink">▌</span>';
+          throttledPartialSave();
           scrollBottom();
         },
-        onModelDone: (model) => {
-          const el = turnEl.querySelector(`[data-model-content="${model}"]`);
-          if (el) el.innerHTML = renderMarkdownLite(modelBuffers[model]);
-        },
-        onModelError: (model, err) => {
-          const el = turnEl.querySelector(`[data-model-content="${model}"]`);
-          if (el) el.innerHTML = `<span class="text-red-400 text-xs">Error: ${escapeHtml(err)}</span>`;
+        onModelDone: (model, result) => {
+          upsertResponse(turn, model, {
+            model,
+            content: result.content,
+            finishReason: result.finishReason,
+            usage: result.usage,
+            error: result.error,
+          });
+          turn.calls!.push(buildLogEntry('model', model, result));
+          renderModelCardResult(turnEl, model, turn, true);
+          persist('complete');
         },
         onFusionChunk: (chunk) => {
+          fusionBuffer += chunk;
+          turn.fusedResponse = fusionBuffer;
           const el = turnEl.querySelector('[data-fused-content]');
-          if (el) {
-            const fusionBuffer = el.getAttribute('data-buffer') || '';
-            const newBuffer = fusionBuffer + chunk;
-            el.setAttribute('data-buffer', newBuffer);
-            el.innerHTML = renderMarkdownLite(newBuffer) + '<span class="animate-blink text-or-accent">▌</span>';
-          }
+          if (el) el.innerHTML = renderMarkdownLite(fusionBuffer) + '<span class="animate-blink text-or-accent">▌</span>';
+          throttledPartialSave();
           scrollBottom();
         },
-        onFusionDone: () => {
-          const el = turnEl.querySelector('[data-fused-content]');
-          if (el) {
-            const buf = el.getAttribute('data-buffer') || '';
-            el.innerHTML = renderMarkdownLite(buf);
-            el.removeAttribute('data-buffer');
+        onFusionDone: (outcome) => {
+          turn.fusedResponse = outcome.fusedContent;
+          turn.fusion = {
+            skipped: outcome.skipped,
+            finishReason: outcome.result?.finishReason ?? null,
+            usage: outcome.result?.usage ?? null,
+            error: outcome.result?.error ?? null,
+          };
+          if (outcome.result && outcome.model) {
+            turn.calls!.push(buildLogEntry('synthesis', outcome.model, outcome.result));
           }
-        },
-        onFusionError: (err) => {
-          const el = turnEl.querySelector('[data-fused-content]');
-          if (el) el.innerHTML = `<span class="text-red-400 text-xs">Fusion error: ${escapeHtml(err)}</span>`;
+          renderFusedResult(turnEl, turn, true);
+          persist('complete');
         },
       });
-
-      activeRun.turns.push(turn);
-      saveRun(activeRun);
-      renderRunList();
     } catch (err) {
       console.error('Fusion run error', err);
     } finally {
       isStreaming = false;
       $btnSend.disabled = false;
       scrollBottom();
+      renderRunList();
     }
   }
 
@@ -709,6 +830,7 @@ import Layout from '../layouts/Layout.astro';
               data-model-content="${m}"
               class="px-3 py-3 text-sm text-gray-800 dark:text-gray-200 leading-relaxed min-h-[60px] prose-sm prose dark:prose-invert max-w-none"
             ><span class="animate-blink">▌</span></div>
+            <div data-model-foot="${m}" class="px-3 py-1.5 border-t border-gray-100 dark:border-or-border"></div>
           </div>
         `).join('')}
       </div>
@@ -723,9 +845,9 @@ import Layout from '../layouts/Layout.astro';
         </div>
         <div
           data-fused-content
-          data-buffer=""
           class="px-4 py-4 text-sm text-gray-800 dark:text-gray-200 leading-relaxed min-h-[60px] prose-sm prose dark:prose-invert max-w-none"
         ><span class="animate-blink text-or-accent">▌</span></div>
+        <div data-fused-foot class="px-4 py-1.5 border-t border-or-accent/20"></div>
       </div>
     `;
     return div;
@@ -734,19 +856,14 @@ import Layout from '../layouts/Layout.astro';
   function renderAllTurns() {
     $turnsContainer.innerHTML = '';
     if (!activeRun) return;
+    const lastIdx = activeRun.turns.length - 1;
     activeRun.turns.forEach((turn, idx) => {
-      const el = createTurnElement(turn.userMessage, activeRun!.models, idx);
-      // Fill in saved content
-      activeRun!.models.forEach((m) => {
-        const resp = turn.modelResponses.find((r) => r.model === m);
-        const contentEl = el.querySelector(`[data-model-content="${m}"]`);
-        if (contentEl && resp) contentEl.innerHTML = renderMarkdownLite(resp.content);
-      });
-      const fusedEl = el.querySelector('[data-fused-content]');
-      if (fusedEl) {
-        fusedEl.removeAttribute('data-buffer');
-        fusedEl.innerHTML = renderMarkdownLite(turn.fusedResponse);
-      }
+      const models = turn.modelResponses.length > 0
+        ? turn.modelResponses.map((r) => r.model)
+        : activeRun!.models;
+      const el = createTurnElement(turn.userMessage, models, idx);
+      models.forEach((m) => renderModelCardResult(el, m, turn, idx === lastIdx));
+      renderFusedResult(el, turn, idx === lastIdx);
       $turnsContainer.appendChild(el);
     });
     scrollBottom();
