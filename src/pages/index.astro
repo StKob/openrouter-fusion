@@ -163,6 +163,15 @@ import Layout from '../layouts/Layout.astro';
           ></textarea>
         </div>
 
+        <!-- Disk status banner -->
+        <div id="disk-banner" class="hidden border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-600 dark:text-amber-400">
+          <div class="flex items-center gap-3">
+            <span id="disk-banner-text"></span>
+            <button id="btn-reenable-disk" class="hidden px-2 py-0.5 rounded border border-amber-500/40 hover:bg-amber-500/10 transition-colors">Re-enable</button>
+            <button id="btn-dismiss-disk" class="ml-auto hover:opacity-70">✕</button>
+          </div>
+        </div>
+
         <!-- Conversation turns -->
         <div id="turns-container" class="flex-1 overflow-y-auto px-4 py-4 space-y-8">
           <!-- turns rendered by JS -->
@@ -253,6 +262,17 @@ import Layout from '../layouts/Layout.astro';
             <span id="theme-toggle-dot" class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform translate-x-6"></span>
           </button>
         </div>
+
+        <!-- Disk saves + export -->
+        <div class="border-t border-gray-100 dark:border-or-border pt-4">
+          <div class="text-sm font-medium text-gray-700 dark:text-gray-300">Disk saves</div>
+          <div id="disk-status" class="text-xs text-gray-400 dark:text-or-muted mt-0.5 mb-2">Off</div>
+          <div class="flex gap-2 flex-wrap">
+            <button id="btn-pick-folder" class="px-3 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-or-border hover:border-or-accent hover:text-or-accent transition-colors">Choose folder…</button>
+            <button id="btn-export-run" class="px-3 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-or-border hover:border-or-accent hover:text-or-accent transition-colors">Export run (MD)</button>
+            <button id="btn-export-all" class="px-3 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-or-border hover:border-or-accent hover:text-or-accent transition-colors">Export all (JSON)</button>
+          </div>
+        </div>
       </div>
 
       <div class="mt-6 flex gap-3">
@@ -291,6 +311,7 @@ import Layout from '../layouts/Layout.astro';
   initTheme();
   updateThemeIcons();
   renderRunList();
+  refreshDiskState();
   populateFusionModelSelect(null);
 
   // ─── Element refs ─────────────────────────────────────────────────────────────
@@ -311,8 +332,15 @@ import Layout from '../layouts/Layout.astro';
   const $settingsFusionModel = document.getElementById('settings-fusion-model') as HTMLSelectElement;
 
   // ─── Persistence ─────────────────────────────────────────────────────────────
+  function showDiskBanner(text: string, reenable: boolean) {
+    document.getElementById('disk-banner')!.classList.remove('hidden');
+    document.getElementById('disk-banner-text')!.textContent = text;
+    document.getElementById('btn-reenable-disk')!.classList.toggle('hidden', !reenable);
+  }
+
   function showDiskWarning(text: string) {
-    console.warn(text); // ponytail: replaced by the banner UI in the disk-UI task
+    console.warn(text);
+    showDiskBanner(text, false);
   }
 
   function persist(level: 'partial' | 'complete') {
@@ -331,6 +359,63 @@ import Layout from '../layouts/Layout.astro';
     lastPartialSave = now;
     persist('partial');
   }
+
+  async function refreshDiskState() {
+    const status = document.getElementById('disk-status')!;
+    if (!diskSupported()) {
+      diskActive = false;
+      document.getElementById('btn-pick-folder')!.classList.add('hidden');
+      status.textContent = 'Not supported in this browser — use the Export buttons.';
+      return;
+    }
+    const state = await diskState();
+    diskActive = state === 'ok';
+    if (state === 'ok') {
+      status.textContent = 'Saving each run to your chosen folder as Markdown.';
+    } else if (state === 'prompt') {
+      status.textContent = 'Folder chosen, but access needs to be re-enabled.';
+      showDiskBanner('Disk saves need to be re-enabled for this session.', true);
+    } else {
+      status.textContent = 'Off — choose a folder to auto-save runs as Markdown.';
+    }
+  }
+
+  function download(filename: string, content: string, mime: string) {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  document.getElementById('btn-pick-folder')!.addEventListener('click', async () => {
+    try {
+      await pickFolder();
+      await refreshDiskState();
+    } catch { /* user cancelled the picker */ }
+  });
+
+  document.getElementById('btn-reenable-disk')!.addEventListener('click', async () => {
+    if (await reenableDisk()) {
+      document.getElementById('disk-banner')!.classList.add('hidden');
+      await refreshDiskState();
+    }
+  });
+
+  document.getElementById('btn-dismiss-disk')!.addEventListener('click', () => {
+    document.getElementById('disk-banner')!.classList.add('hidden');
+  });
+
+  document.getElementById('btn-export-run')!.addEventListener('click', () => {
+    if (!activeRun) return;
+    download(runFilename(activeRun), runToMarkdown(activeRun), 'text/markdown');
+  });
+
+  document.getElementById('btn-export-all')!.addEventListener('click', () => {
+    download(`fusion-runs-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(getRuns(), null, 2), 'application/json');
+  });
 
   function upsertResponse(turn: Turn, model: string, patch: ModelResponse) {
     const idx = turn.modelResponses.findIndex((r) => r.model === model);
