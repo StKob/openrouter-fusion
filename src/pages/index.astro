@@ -304,6 +304,7 @@ import Layout from '../layouts/Layout.astro';
   let currentSettings: Settings = getSettings();
   let lastMessages: { role: string; content: string }[] | null = null;
   let diskActive = false;
+  let diskChain: Promise<void> = Promise.resolve();
   let lastPartialSave = 0;
 
   function init() {
@@ -347,7 +348,9 @@ import Layout from '../layouts/Layout.astro';
     if (!activeRun) return;
     saveRun(activeRun);
     if (level === 'complete' && diskActive) {
-      writeRunFile(runFilename(activeRun), runToMarkdown(activeRun)).catch((err) => {
+      const filename = runFilename(activeRun);
+      const content = runToMarkdown(activeRun);
+      diskChain = diskChain.then(() => writeRunFile(filename, content)).catch((err) => {
         showDiskWarning(`Disk save failed: ${err?.message ?? err}`);
       });
     }
@@ -394,7 +397,9 @@ import Layout from '../layouts/Layout.astro';
     try {
       await pickFolder();
       await refreshDiskState();
-    } catch { /* user cancelled the picker */ }
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') showDiskWarning(`Folder selection failed: ${err?.message ?? err}`);
+    }
   });
 
   document.getElementById('btn-reenable-disk')!.addEventListener('click', async () => {

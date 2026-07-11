@@ -213,4 +213,17 @@ describe('runToMarkdown', () => {
     const run = { ...sampleRun, turns: [{ ...sampleRun.turns[0]!, fusion: { skipped: 'all-failed' as const } }] };
     expect(runToMarkdown(run)).toContain('### Fused answer (synthesis skipped: all-failed)');
   });
+
+  it('marks truncated responses', () => {
+    const run = {
+      ...sampleRun,
+      turns: [{
+        ...sampleRun.turns[0]!,
+        modelResponses: [
+          { model: 'c/three', content: 'Cut off answ', finishReason: 'length', usage: null, error: null },
+        ],
+      }],
+    };
+    expect(runToMarkdown(run)).toContain('### c/three (truncated)');
+  });
 });
