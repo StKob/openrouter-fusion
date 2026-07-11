@@ -806,6 +806,80 @@ import Layout from '../layouts/Layout.astro';
     }
   }
 
+  // ─── Retries (latest turn only) ───────────────────────────────────────────────
+  $turnsContainer.addEventListener('click', async (e) => {
+    const target = e.target as HTMLElement;
+    const retryModelBtn = target.closest('[data-retry-model]') as HTMLElement | null;
+    const retryFusionBtn = target.closest('[data-retry-fusion]') as HTMLElement | null;
+    if (!retryModelBtn && !retryFusionBtn) return;
+    if (isStreaming || !activeRun || !lastMessages || activeRun.turns.length === 0) return;
+    const turn = activeRun.turns[activeRun.turns.length - 1]!;
+    turn.calls ??= [];
+    const turnEl = target.closest('.turn-block') as HTMLElement | null;
+    if (!turnEl) return;
+    const settings = getSettings();
+    if (!settings.apiKey) { openSettings(); return; }
+
+    isStreaming = true;
+    $btnSend.disabled = true;
+    try {
+      if (retryModelBtn) {
+        const model = retryModelBtn.getAttribute('data-retry-model')!;
+        const contentEl = turnEl.querySelector(`[data-model-content="${model}"]`);
+        if (contentEl) contentEl.innerHTML = '<span class="animate-blink">▌</span>';
+        let buffer = '';
+        const result = await streamCompletion(settings.apiKey, model, lastMessages, (chunk) => {
+          buffer += chunk;
+          upsertResponse(turn, model, { model, content: buffer });
+          if (contentEl) contentEl.innerHTML = renderMarkdownLite(buffer) + '<span class="animate-blink">▌</span>';
+          throttledPartialSave();
+        });
+        upsertResponse(turn, model, {
+          model,
+          content: result.content,
+          finishReason: result.finishReason,
+          usage: result.usage,
+          error: result.error,
+        });
+        turn.calls.push(buildLogEntry('retry', model, result));
+        renderModelCardResult(turnEl, model, turn, true);
+        persist('complete');
+      } else if (retryFusionBtn) {
+        const fusedEl = turnEl.querySelector('[data-fused-content]');
+        if (fusedEl) fusedEl.innerHTML = '<span class="animate-blink text-or-accent">▌</span>';
+        let buffer = '';
+        const outcome = await runSynthesis(
+          settings.apiKey,
+          $fusionModelSelect.value || settings.fusionModel || 'auto',
+          activeRun.models,
+          turn.userMessage,
+          turn.modelResponses,
+          (chunk) => {
+            buffer += chunk;
+            turn.fusedResponse = buffer;
+            if (fusedEl) fusedEl.innerHTML = renderMarkdownLite(buffer) + '<span class="animate-blink text-or-accent">▌</span>';
+            throttledPartialSave();
+          }
+        );
+        turn.fusedResponse = outcome.fusedContent;
+        turn.fusion = {
+          skipped: outcome.skipped,
+          finishReason: outcome.result?.finishReason ?? null,
+          usage: outcome.result?.usage ?? null,
+          error: outcome.result?.error ?? null,
+        };
+        if (outcome.result && outcome.model) {
+          turn.calls.push(buildLogEntry('synthesis', outcome.model, outcome.result));
+        }
+        renderFusedResult(turnEl, turn, true);
+        persist('complete');
+      }
+    } finally {
+      isStreaming = false;
+      $btnSend.disabled = false;
+    }
+  });
+
   // ─── DOM helpers ─────────────────────────────────────────────────────────────
   function createTurnElement(userMessage: string, models: string[], _idx: number): HTMLElement {
     const div = document.createElement('div');
