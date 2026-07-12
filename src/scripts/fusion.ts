@@ -15,7 +15,9 @@ let _modelCache: ORModel[] | null = null;
 
 export async function fetchModels(apiKey: string): Promise<ORModel[]> {
   if (_modelCache) return _modelCache;
-  const res = await fetch('https://openrouter.ai/api/v1/models', {
+  // /models/user = catalog filtered by this key's privacy settings & guardrails
+  // (plain /models is the global catalog and can list unroutable models)
+  const res = await fetch('https://openrouter.ai/api/v1/models/user', {
     headers: { Authorization: `Bearer ${apiKey}` },
   });
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.statusText}`);
