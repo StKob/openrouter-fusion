@@ -290,7 +290,7 @@ import Layout from '../layouts/Layout.astro';
 <script>
   import { getSettings, saveSettings, getRuns, saveRun, deleteRun, createRun, formatDate, formatUsage, runToMarkdown, runFilename } from '../scripts/storage';
   import type { FusionRun, Turn, Settings, ModelResponse } from '../scripts/storage';
-  import { fetchModels, runFusion, runSynthesis, streamCompletion, buildMessages, buildLogEntry, PRESETS, clearModelCache } from '../scripts/fusion';
+  import { fetchModels, runFusion, runSynthesis, streamCompletion, buildMessages, buildLogEntry, formatPricePer1M, PRESETS, clearModelCache } from '../scripts/fusion';
   import type { ORModel } from '../scripts/fusion';
   import { initTheme, toggleTheme, applyTheme } from '../scripts/theme';
   import { diskSupported, pickFolder, diskState, reenableDisk, writeRunFile } from '../scripts/disksave';
@@ -728,7 +728,10 @@ import Layout from '../layouts/Layout.astro';
           </div>
           <div class="min-w-0 flex-1">
             <div class="text-sm font-medium text-gray-900 dark:text-white truncate">${escapeHtml(m.name)}</div>
-            <div class="text-xs text-gray-400 dark:text-or-muted truncate">${escapeHtml(m.id)}${m.context_length ? ` · ${(m.context_length / 1000).toFixed(0)}k ctx` : ''}</div>
+            <div class="text-xs text-gray-400 dark:text-or-muted flex">
+              <span class="truncate">${escapeHtml(m.id)}</span>
+              <span class="flex-shrink-0">${m.context_length ? ` · ${(m.context_length / 1000).toFixed(0)}k ctx` : ''}${formatPricePer1M(m.pricing) ? ` · ${formatPricePer1M(m.pricing)}` : ''}</span>
+            </div>
           </div>
         </button>
       `;

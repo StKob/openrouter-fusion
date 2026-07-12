@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyChunk, buildLogEntry, buildMessages, newStreamResult, splitSSEBuffer, partitionResponses, decideSynthesis, buildFusionPrompt } from '../src/scripts/fusion';
+import { applyChunk, buildLogEntry, formatPricePer1M, buildMessages, newStreamResult, splitSSEBuffer, partitionResponses, decideSynthesis, buildFusionPrompt } from '../src/scripts/fusion';
 import { formatUsage, slugify, runFilename, runToMarkdown } from '../src/scripts/storage';
 import type { FusionRun } from '../src/scripts/storage';
 
@@ -225,5 +225,23 @@ describe('runToMarkdown', () => {
       }],
     };
     expect(runToMarkdown(run)).toContain('### c/three (truncated)');
+  });
+});
+
+describe('formatPricePer1M', () => {
+  it('formats prompt/completion per 1M tokens', () => {
+    expect(formatPricePer1M({ prompt: '0.00000014', completion: '0.00000058' })).toBe('$0.14/$0.58 per 1M');
+  });
+  it('labels zero-priced models as free', () => {
+    expect(formatPricePer1M({ prompt: '0', completion: '0' })).toBe('free');
+  });
+  it('returns empty string when pricing is missing', () => {
+    expect(formatPricePer1M(undefined)).toBe('');
+  });
+  it('trims trailing zeros and handles larger prices', () => {
+    expect(formatPricePer1M({ prompt: '0.0000005', completion: '0.0000022' })).toBe('$0.5/$2.2 per 1M');
+  });
+  it('hides sentinel (negative) pricing used by alias models', () => {
+    expect(formatPricePer1M({ prompt: '-1', completion: '-1' })).toBe('');
   });
 });

@@ -26,6 +26,16 @@ export async function fetchModels(apiKey: string): Promise<ORModel[]> {
   return _modelCache;
 }
 
+export function formatPricePer1M(pricing?: { prompt: string; completion: string }): string {
+  if (!pricing) return '';
+  const per1M = (s: string) => parseFloat((parseFloat(s) * 1e6).toFixed(3));
+  const inP = per1M(pricing.prompt);
+  const outP = per1M(pricing.completion);
+  if (!Number.isFinite(inP) || !Number.isFinite(outP) || inP < 0 || outP < 0) return ''; // -1 = variable/unknown (alias models)
+  if (!inP && !outP) return 'free';
+  return `$${inP}/$${outP} per 1M`;
+}
+
 export function clearModelCache(): void {
   _modelCache = null;
 }
