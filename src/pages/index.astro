@@ -311,9 +311,6 @@ import Layout from '../layouts/Layout.astro';
   // ─── Init ─────────────────────────────────────────────────────────────────────
   initTheme();
   updateThemeIcons();
-  renderRunList();
-  refreshDiskState();
-  populateFusionModelSelect(null);
 
   // ─── Element refs ─────────────────────────────────────────────────────────────
   const $welcome = document.getElementById('view-welcome')!;
@@ -331,6 +328,12 @@ import Layout from '../layouts/Layout.astro';
   const $modalSettings = document.getElementById('modal-settings')!;
   const $settingsApiKey = document.getElementById('settings-api-key') as HTMLInputElement;
   const $settingsFusionModel = document.getElementById('settings-fusion-model') as HTMLSelectElement;
+
+  // Initial render — must run after the element refs above (const TDZ; upstream
+  // called these before the refs and crashed init on load)
+  renderRunList();
+  refreshDiskState();
+  populateFusionModelSelect(null);
 
   // ─── Persistence ─────────────────────────────────────────────────────────────
   function showDiskBanner(text: string, reenable: boolean) {
