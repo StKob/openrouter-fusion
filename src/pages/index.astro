@@ -692,12 +692,29 @@ import Layout from '../layouts/Layout.astro';
       .filter((m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q))
       .slice(0, 50);
 
-    if (filtered.length === 0) {
-      $modelList.innerHTML = `<div class="px-4 py-3 text-sm text-gray-400 dark:text-or-muted">No models found</div>`;
+    // Offer the raw query as a custom model id — guardrail-allowed models don't
+    // always appear in /models/user, so the list can't be trusted as exhaustive
+    const trimmed = query.trim();
+    const customRow = trimmed.includes('/') && !allModels.some((m) => m.id === trimmed)
+      ? `
+        <button
+          data-model-id="${escapeHtml(trimmed)}"
+          class="w-full text-left px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-or-bg transition-colors flex items-center gap-3 border-b border-gray-100 dark:border-or-border"
+        >
+          <span class="text-or-accent text-sm">+</span>
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-medium text-or-accent truncate">Use "${escapeHtml(trimmed)}" as model id</div>
+            <div class="text-xs text-gray-400 dark:text-or-muted">Not in your list — sent as-is to OpenRouter</div>
+          </div>
+        </button>`
+      : '';
+
+    if (filtered.length === 0 && !customRow) {
+      $modelList.innerHTML = `<div class="px-4 py-3 text-sm text-gray-400 dark:text-or-muted">No models found${trimmed ? ' — type a full model id (author/slug) to add it directly' : ''}</div>`;
       return;
     }
 
-    $modelList.innerHTML = filtered.map((m) => {
+    $modelList.innerHTML = customRow + filtered.map((m) => {
       const selected = selectedModels.includes(m.id);
       return `
         <button
