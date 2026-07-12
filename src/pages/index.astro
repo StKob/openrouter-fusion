@@ -520,6 +520,7 @@ import Layout from '../layouts/Layout.astro';
 
   function showRun(run: FusionRun) {
     activeRun = run;
+    lastMessages = null; // belongs to the previous run's last send; retry rebuilds it
     selectedModels = [...run.models];
     $welcome.classList.add('hidden');
     $run.classList.remove('hidden');
@@ -922,9 +923,18 @@ import Layout from '../layouts/Layout.astro';
     const retryModelBtn = target.closest('[data-retry-model]') as HTMLElement | null;
     const retryFusionBtn = target.closest('[data-retry-fusion]') as HTMLElement | null;
     if (!retryModelBtn && !retryFusionBtn) return;
-    if (isStreaming || !activeRun || !lastMessages || activeRun.turns.length === 0) return;
+    if (isStreaming || !activeRun || activeRun.turns.length === 0) return;
     const turn = activeRun.turns[activeRun.turns.length - 1]!;
     turn.calls ??= [];
+    if (!lastMessages) {
+      // Rebuild the last turn's request from persisted state (after reload/run switch)
+      const history: { role: string; content: string }[] = [];
+      for (const t of activeRun.turns.slice(0, -1)) {
+        history.push({ role: 'user', content: t.userMessage });
+        if (t.fusedResponse) history.push({ role: 'assistant', content: t.fusedResponse });
+      }
+      lastMessages = buildMessages(activeRun.systemPrompt, history, turn.userMessage);
+    }
     const turnEl = target.closest('.turn-block') as HTMLElement | null;
     if (!turnEl) return;
     const settings = getSettings();
