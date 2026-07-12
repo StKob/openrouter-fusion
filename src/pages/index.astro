@@ -490,14 +490,20 @@ import Layout from '../layouts/Layout.astro';
       const badge = f?.error ? statusBadge('error', null)
         : f?.finishReason === 'length' ? statusBadge('truncated', f.finishReason)
         : '';
-      const retry = isLast && notClean
-        ? `<button data-retry-fusion class="text-[11px] px-2 py-0.5 rounded border border-or-accent/40 text-or-accent hover:bg-or-accent/10 transition-colors">${f?.skipped ? 'Run synthesis' : 'Retry synthesis'}</button>`
+      const hasOk = turn.modelResponses.some((r) => r.content.trim() && !r.error);
+      const retry = isLast && (notClean || hasOk)
+        ? `<button data-retry-fusion class="text-[11px] px-2 py-0.5 rounded border border-or-accent/40 text-or-accent hover:bg-or-accent/10 transition-colors">${f?.skipped || !turn.fusedResponse ? 'Run synthesis' : 'Re-run synthesis'}</button>`
+        : '';
+      const missing = isLast ? selectedModels.filter((m) => !turn.modelResponses.some((r) => r.model === m)) : [];
+      const runAdded = missing.length
+        ? `<button data-run-added class="text-[11px] px-2 py-0.5 rounded border border-or-accent/40 text-or-accent hover:bg-or-accent/10 transition-colors">Run ${missing.length} added model${missing.length > 1 ? 's' : ''} on this prompt</button>`
         : '';
       footEl.innerHTML = `
         <div class="flex items-center gap-2">
           ${badge}
           <span class="text-[10px] text-gray-400 dark:text-or-muted">${formatUsage(f?.usage)}</span>
           <span data-turn-cost class="ml-auto text-[10px] text-gray-400 dark:text-or-muted"></span>
+          ${runAdded}
           ${retry}
         </div>`;
     }
@@ -509,6 +515,55 @@ import Layout from '../layouts/Layout.astro';
     if (!el) return;
     const total = (turn.calls ?? []).reduce((s, c) => s + (c.cost ?? 0), 0);
     el.textContent = total > 0 ? `turn total $${total.toFixed(4)}` : '';
+  }
+
+  // Re-render the last turn's fused-answer footer (run-added / synthesis buttons
+  // depend on the current chip selection)
+  function refreshLastTurnControls() {
+    if (!activeRun || activeRun.turns.length === 0) return;
+    const turnEl = $turnsContainer.querySelector('.turn-block:last-child') as HTMLElement | null;
+    if (!turnEl) return;
+    renderFusedResult(turnEl, activeRun.turns[activeRun.turns.length - 1]!, true);
+  }
+
+  // Append a card for a model that wasn't part of the turn's original grid
+  function appendModelCard(turnEl: HTMLElement, model: string) {
+    const grid = turnEl.querySelector('.grid');
+    if (!grid || grid.querySelector(`[data-model-content="${model}"]`)) return;
+    const card = document.createElement('div');
+    card.className = 'bg-gray-50 dark:bg-or-card border border-gray-200 dark:border-or-border rounded-xl overflow-hidden';
+    card.innerHTML = `
+      <div class="px-3 py-2 border-b border-gray-100 dark:border-or-border flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full bg-or-accent flex-shrink-0"></span>
+        <span class="text-xs font-medium text-gray-600 dark:text-gray-400 truncate">${escapeHtml(shortModelName(model))}</span>
+      </div>
+      <div data-model-content="${model}" class="px-3 py-3 text-sm text-gray-800 dark:text-gray-200 leading-relaxed min-h-[60px] prose-sm prose dark:prose-invert max-w-none"><span class="animate-blink">▌</span></div>
+      <div data-model-foot="${model}" class="px-3 py-1.5 border-t border-gray-100 dark:border-or-border"></div>`;
+    grid.appendChild(card);
+  }
+
+  // Stream one model's answer to the last turn's prompt into its card.
+  // kind 'retry' = re-run of an existing card, 'model' = first run (added model).
+  async function streamModelIntoTurn(apiKey: string, model: string, turn: Turn, turnEl: HTMLElement, kind: 'retry' | 'model') {
+    const contentEl = turnEl.querySelector(`[data-model-content="${model}"]`);
+    if (contentEl) contentEl.innerHTML = '<span class="animate-blink">▌</span>';
+    let buffer = '';
+    const result = await streamCompletion(apiKey, model, lastMessages!, (chunk) => {
+      buffer += chunk;
+      upsertResponse(turn, model, { model, content: buffer });
+      if (contentEl) contentEl.innerHTML = renderMarkdownLite(buffer) + '<span class="animate-blink">▌</span>';
+      throttledPartialSave();
+    });
+    upsertResponse(turn, model, {
+      model,
+      content: result.content,
+      finishReason: result.finishReason,
+      usage: result.usage,
+      error: result.error,
+    });
+    turn.calls!.push(buildLogEntry(kind, model, result));
+    renderModelCardResult(turnEl, model, turn, true);
+    persist('complete');
   }
 
   // ─── Navigation ───────────────────────────────────────────────────────────────
@@ -627,6 +682,7 @@ import Layout from '../layouts/Layout.astro';
       renderPresetTabs(preset);
       renderModelChips();
       if (activeRun) { activeRun.models = [...selectedModels]; saveRun(activeRun); }
+      refreshLastTurnControls();
     });
   });
 
@@ -650,6 +706,7 @@ import Layout from '../layouts/Layout.astro';
       renderPresetTabs('custom');
       renderModelChips();
       if (activeRun) { activeRun.models = [...selectedModels]; saveRun(activeRun); }
+      refreshLastTurnControls();
     }
   });
 
@@ -720,8 +777,7 @@ import Layout from '../layouts/Layout.astro';
       return `
         <button
           data-model-id="${m.id}"
-          class="w-full text-left px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-or-bg transition-colors flex items-center gap-3 ${selected ? 'opacity-50 cursor-not-allowed' : ''}"
-          ${selected ? 'disabled' : ''}
+          class="w-full text-left px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-or-bg transition-colors flex items-center gap-3"
         >
           <div class="w-4 h-4 flex-shrink-0 rounded-sm border ${selected ? 'bg-or-accent border-or-accent' : 'border-gray-300 dark:border-or-border'}">
             ${selected ? '<svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>' : ''}
@@ -740,17 +796,21 @@ import Layout from '../layouts/Layout.astro';
 
   $modelList.addEventListener('click', (e) => {
     const btn = (e.target as HTMLElement).closest('[data-model-id]') as HTMLElement;
-    if (btn && !btn.hasAttribute('disabled')) {
-      const id = btn.getAttribute('data-model-id')!;
-      if (!selectedModels.includes(id) && selectedModels.length < 4) {
-        selectedModels.push(id);
-        activePreset = 'custom';
-        renderPresetTabs('custom');
-        renderModelChips();
-        renderModelListDropdown($modelSearch.value);
-        if (activeRun) { activeRun.models = [...selectedModels]; saveRun(activeRun); }
-      }
+    if (!btn) return;
+    const id = btn.getAttribute('data-model-id')!;
+    if (selectedModels.includes(id)) {
+      selectedModels = selectedModels.filter((x) => x !== id); // toggle off
+    } else if (selectedModels.length < 4) {
+      selectedModels.push(id);
+    } else {
+      return; // at the 4-model cap
     }
+    activePreset = 'custom';
+    renderPresetTabs('custom');
+    renderModelChips();
+    renderModelListDropdown($modelSearch.value);
+    if (activeRun) { activeRun.models = [...selectedModels]; saveRun(activeRun); }
+    refreshLastTurnControls();
   });
 
   function populateFusionModelSelect(models: ORModel[] | null) {
@@ -925,7 +985,8 @@ import Layout from '../layouts/Layout.astro';
     const target = e.target as HTMLElement;
     const retryModelBtn = target.closest('[data-retry-model]') as HTMLElement | null;
     const retryFusionBtn = target.closest('[data-retry-fusion]') as HTMLElement | null;
-    if (!retryModelBtn && !retryFusionBtn) return;
+    const runAddedBtn = target.closest('[data-run-added]') as HTMLElement | null;
+    if (!retryModelBtn && !retryFusionBtn && !runAddedBtn) return;
     if (isStreaming || !activeRun || activeRun.turns.length === 0) return;
     const turn = activeRun.turns[activeRun.turns.length - 1]!;
     turn.calls ??= [];
@@ -948,25 +1009,12 @@ import Layout from '../layouts/Layout.astro';
     try {
       if (retryModelBtn) {
         const model = retryModelBtn.getAttribute('data-retry-model')!;
-        const contentEl = turnEl.querySelector(`[data-model-content="${model}"]`);
-        if (contentEl) contentEl.innerHTML = '<span class="animate-blink">▌</span>';
-        let buffer = '';
-        const result = await streamCompletion(settings.apiKey, model, lastMessages, (chunk) => {
-          buffer += chunk;
-          upsertResponse(turn, model, { model, content: buffer });
-          if (contentEl) contentEl.innerHTML = renderMarkdownLite(buffer) + '<span class="animate-blink">▌</span>';
-          throttledPartialSave();
-        });
-        upsertResponse(turn, model, {
-          model,
-          content: result.content,
-          finishReason: result.finishReason,
-          usage: result.usage,
-          error: result.error,
-        });
-        turn.calls.push(buildLogEntry('retry', model, result));
-        renderModelCardResult(turnEl, model, turn, true);
-        persist('complete');
+        await streamModelIntoTurn(settings.apiKey, model, turn, turnEl, 'retry');
+      } else if (runAddedBtn) {
+        const missing = selectedModels.filter((m) => !turn.modelResponses.some((r) => r.model === m));
+        missing.forEach((m) => appendModelCard(turnEl, m));
+        await Promise.all(missing.map((m) => streamModelIntoTurn(settings.apiKey, m, turn, turnEl, 'model')));
+        renderFusedResult(turnEl, turn, true);
       } else if (retryFusionBtn) {
         const fusedEl = turnEl.querySelector('[data-fused-content]');
         if (fusedEl) fusedEl.innerHTML = '<span class="animate-blink text-or-accent">▌</span>';
