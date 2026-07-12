@@ -200,6 +200,14 @@ export function partitionResponses(responses: ModelResponse[]): { ok: ModelRespo
   return { ok, failed };
 }
 
+// Pause automatic synthesis when a turn has both successes and failures —
+// fusing incomplete inputs wastes a synthesis call if the user then retries
+// the failed models. Explicit "Run synthesis" is unaffected.
+export function shouldPauseSynthesis(responses: ModelResponse[]): boolean {
+  const { ok, failed } = partitionResponses(responses);
+  return ok.length >= 1 && failed.length >= 1;
+}
+
 export type SynthesisDecision =
   | { mode: 'run'; responses: ModelResponse[] }
   | { mode: 'single'; response: ModelResponse }
@@ -239,7 +247,7 @@ Synthesize the above responses into the definitive best answer:`;
 export interface SynthesisOutcome {
   fusedContent: string;
   result: StreamResult | null;           // null when no API call was made
-  skipped: 'all-failed' | 'single' | null;
+  skipped: 'all-failed' | 'single' | 'partial-failure' | null;
   model: string | null;                  // model id actually called for synthesis
 }
 
@@ -288,6 +296,10 @@ export async function runFusion(params: {
     })
   );
 
+  if (shouldPauseSynthesis(responses)) {
+    onFusionDone({ fusedContent: '', result: null, skipped: 'partial-failure', model: null });
+    return;
+  }
   const outcome = await runSynthesis(apiKey, fusionModel, models, userMessage, responses, onFusionChunk);
   onFusionDone(outcome);
 }

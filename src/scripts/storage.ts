@@ -33,7 +33,7 @@ export interface FusionMeta {
   finishReason?: string | null;
   usage?: Usage | null;
   error?: string | null;
-  skipped?: 'all-failed' | 'single' | null;
+  skipped?: 'all-failed' | 'single' | 'partial-failure' | null;
 }
 
 export interface Turn {

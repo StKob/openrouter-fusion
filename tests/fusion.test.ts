@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyChunk, buildLogEntry, formatPricePer1M, buildMessages, newStreamResult, splitSSEBuffer, partitionResponses, decideSynthesis, buildFusionPrompt } from '../src/scripts/fusion';
+import { applyChunk, buildLogEntry, formatPricePer1M, buildMessages, newStreamResult, splitSSEBuffer, partitionResponses, decideSynthesis, shouldPauseSynthesis, buildFusionPrompt } from '../src/scripts/fusion';
 import { formatUsage, slugify, runFilename, runToMarkdown } from '../src/scripts/storage';
 import type { FusionRun } from '../src/scripts/storage';
 
@@ -134,6 +134,18 @@ describe('decideSynthesis', () => {
     const d = decideSynthesis([ok1, failed, ok2]);
     expect(d.mode).toBe('run');
     if (d.mode === 'run') expect(d.responses).toEqual([ok1, ok2]);
+  });
+});
+
+describe('shouldPauseSynthesis', () => {
+  it('pauses when there is at least one failure alongside a success', () => {
+    expect(shouldPauseSynthesis([ok1, failed])).toBe(true);
+  });
+  it('does not pause when all succeeded', () => {
+    expect(shouldPauseSynthesis([ok1, ok2])).toBe(false);
+  });
+  it('does not pause when all failed (all-failed skip handles that)', () => {
+    expect(shouldPauseSynthesis([failed, emptyOk])).toBe(false);
   });
 });
 

@@ -485,6 +485,8 @@ import Layout from '../layouts/Layout.astro';
         el.innerHTML = `<span class="text-red-400 text-xs">Fusion error: ${escapeHtml(turn.fusion.error)}</span>`;
       } else if (turn.fusion?.skipped === 'all-failed') {
         el.innerHTML = `<span class="text-amber-500 text-xs">All models failed — synthesis skipped (not billed).</span>`;
+      } else if (turn.fusion?.skipped === 'partial-failure') {
+        el.innerHTML = `<span class="text-amber-500 text-xs">Some models failed — synthesis paused (not billed). Retry the failed models, or press Run synthesis to fuse the successful responses.</span>`;
       } else {
         const note = turn.fusion?.skipped === 'single'
           ? `<div class="text-[11px] text-gray-400 dark:text-or-muted mb-2">Single successful response — synthesis skipped.</div>`
