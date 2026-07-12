@@ -644,13 +644,11 @@ import Layout from '../layouts/Layout.astro';
     const btn = (e.target as HTMLElement).closest('[data-remove-model]') as HTMLElement;
     if (btn) {
       const m = btn.getAttribute('data-remove-model')!;
-      if (selectedModels.length > 2) {
-        selectedModels = selectedModels.filter((x) => x !== m);
-        activePreset = 'custom';
-        renderPresetTabs('custom');
-        renderModelChips();
-        if (activeRun) { activeRun.models = [...selectedModels]; saveRun(activeRun); }
-      }
+      selectedModels = selectedModels.filter((x) => x !== m);
+      activePreset = 'custom';
+      renderPresetTabs('custom');
+      renderModelChips();
+      if (activeRun) { activeRun.models = [...selectedModels]; saveRun(activeRun); }
     }
   });
 
@@ -790,6 +788,7 @@ import Layout from '../layouts/Layout.astro';
     if (isStreaming || !activeRun) return;
     const message = $chatInput.value.trim();
     if (!message) return;
+    if (selectedModels.length === 0) return; // no chips selected — add a model first
 
     const settings = getSettings();
     if (!settings.apiKey) {
