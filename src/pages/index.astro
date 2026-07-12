@@ -726,6 +726,9 @@ import Layout from '../layouts/Layout.astro';
 
   document.addEventListener('click', (e) => {
     const t = e.target as Node;
+    // A click that re-rendered its own target (list toggle) detaches it from the
+    // DOM before this handler runs — that's not an "outside" click.
+    if (!(t as HTMLElement).isConnected) return;
     if (!document.getElementById('btn-add-model')!.contains(t) && !$modelDropdown.contains(t)) {
       $modelDropdown.classList.add('hidden');
     }
