@@ -180,11 +180,6 @@ import Layout from '../layouts/Layout.astro';
         <!-- Chat input -->
         <div class="border-t border-gray-200 dark:border-or-border px-4 py-3">
           <div class="flex items-end gap-3 max-w-4xl mx-auto">
-            <button
-              id="btn-run-added-main"
-              title="Run the last prompt on the newly added models only (no re-billing of models that already answered)"
-              class="hidden px-3 py-3 text-xs rounded-xl border border-or-accent/40 text-or-accent hover:bg-or-accent/10 transition-colors whitespace-nowrap"
-            >Run added</button>
             <div class="flex-1 relative">
               <textarea
                 id="chat-input"
@@ -201,6 +196,11 @@ import Layout from '../layouts/Layout.astro';
                 </svg>
               </button>
             </div>
+            <button
+              id="btn-run-added-main"
+              title="Run the last prompt on the newly added models only (no re-billing of models that already answered)"
+              class="hidden px-3 py-3 text-xs rounded-xl border border-or-accent/40 text-or-accent hover:bg-or-accent/10 transition-colors whitespace-nowrap"
+            >Run added</button>
           </div>
         </div>
       </div>
