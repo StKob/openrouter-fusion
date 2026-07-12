@@ -180,6 +180,11 @@ import Layout from '../layouts/Layout.astro';
         <!-- Chat input -->
         <div class="border-t border-gray-200 dark:border-or-border px-4 py-3">
           <div class="flex items-end gap-3 max-w-4xl mx-auto">
+            <button
+              id="btn-run-added-main"
+              title="Run the last prompt on the newly added models only (no re-billing of models that already answered)"
+              class="hidden px-3 py-3 text-xs rounded-xl border border-or-accent/40 text-or-accent hover:bg-or-accent/10 transition-colors whitespace-nowrap"
+            >Run added</button>
             <div class="flex-1 relative">
               <textarea
                 id="chat-input"
@@ -521,13 +526,67 @@ import Layout from '../layouts/Layout.astro';
     el.textContent = total > 0 ? `turn total $${total.toFixed(4)}` : '';
   }
 
+  // Show/hide the composer's "Run N added" button from current state
+  function updateRunAddedMainBtn() {
+    const btn = document.getElementById('btn-run-added-main')!;
+    const turn = activeRun?.turns[activeRun.turns.length - 1];
+    const missing = turn ? selectedModels.filter((m) => !turn.modelResponses.some((r) => r.model === m)) : [];
+    if (!turn || missing.length === 0 || isStreaming) {
+      btn.classList.add('hidden');
+      return;
+    }
+    btn.textContent = `Run ${missing.length} added`;
+    btn.classList.remove('hidden');
+  }
+
   // Re-render the last turn's fused-answer footer (run-added / synthesis buttons
   // depend on the current chip selection)
   function refreshLastTurnControls() {
+    updateRunAddedMainBtn();
     if (!activeRun || activeRun.turns.length === 0) return;
     const turnEl = $turnsContainer.querySelector('.turn-block:last-child') as HTMLElement | null;
     if (!turnEl) return;
     renderFusedResult(turnEl, activeRun.turns[activeRun.turns.length - 1]!, true);
+  }
+
+  // Rebuild the last turn's request from persisted state (after reload/run switch)
+  function ensureLastMessages(turn: Turn) {
+    if (lastMessages || !activeRun) return;
+    const history: { role: string; content: string }[] = [];
+    for (const t of activeRun.turns.slice(0, -1)) {
+      history.push({ role: 'user', content: t.userMessage });
+      if (t.fusedResponse) history.push({ role: 'assistant', content: t.fusedResponse });
+    }
+    lastMessages = buildMessages(activeRun.systemPrompt, history, turn.userMessage);
+  }
+
+  // Run the last prompt on selected models that have no card in the last turn
+  async function runMissingModels(turn: Turn, turnEl: HTMLElement, apiKey: string) {
+    const missing = selectedModels.filter((m) => !turn.modelResponses.some((r) => r.model === m));
+    missing.forEach((m) => appendModelCard(turnEl, m));
+    await Promise.all(missing.map((m) => streamModelIntoTurn(apiKey, m, turn, turnEl, 'model')));
+    renderFusedResult(turnEl, turn, true);
+  }
+
+  async function runAddedFromMainButton() {
+    if (isStreaming || !activeRun || activeRun.turns.length === 0) return;
+    const turn = activeRun.turns[activeRun.turns.length - 1]!;
+    turn.calls ??= [];
+    ensureLastMessages(turn);
+    const turnEl = $turnsContainer.querySelector('.turn-block:last-child') as HTMLElement | null;
+    if (!turnEl) return;
+    const settings = getSettings();
+    if (!settings.apiKey) { openSettings(); return; }
+    isStreaming = true;
+    $btnSend.disabled = true;
+    updateRunAddedMainBtn();
+    try {
+      await runMissingModels(turn, turnEl, settings.apiKey);
+    } finally {
+      isStreaming = false;
+      $btnSend.disabled = false;
+      refreshLastTurnControls();
+    }
   }
 
   // Append a card for a model that wasn't part of the turn's original grid
@@ -575,6 +634,7 @@ import Layout from '../layouts/Layout.astro';
     $welcome.classList.remove('hidden');
     $run.classList.add('hidden');
     activeRun = null;
+    updateRunAddedMainBtn();
   }
 
   function showRun(run: FusionRun) {
@@ -587,6 +647,7 @@ import Layout from '../layouts/Layout.astro';
     renderPresetTabs(activePreset);
     renderModelChips();
     renderAllTurns();
+    updateRunAddedMainBtn();
     scrollBottom();
   }
 
@@ -984,6 +1045,7 @@ import Layout from '../layouts/Layout.astro';
       $btnSend.disabled = false;
       scrollBottom();
       renderRunList();
+      updateRunAddedMainBtn();
     }
   }
 
@@ -1008,15 +1070,7 @@ import Layout from '../layouts/Layout.astro';
       refreshLastTurnControls();
       return;
     }
-    if (!lastMessages) {
-      // Rebuild the last turn's request from persisted state (after reload/run switch)
-      const history: { role: string; content: string }[] = [];
-      for (const t of activeRun.turns.slice(0, -1)) {
-        history.push({ role: 'user', content: t.userMessage });
-        if (t.fusedResponse) history.push({ role: 'assistant', content: t.fusedResponse });
-      }
-      lastMessages = buildMessages(activeRun.systemPrompt, history, turn.userMessage);
-    }
+    ensureLastMessages(turn);
     const turnEl = target.closest('.turn-block') as HTMLElement | null;
     if (!turnEl) return;
     const settings = getSettings();
@@ -1029,10 +1083,7 @@ import Layout from '../layouts/Layout.astro';
         const model = retryModelBtn.getAttribute('data-retry-model')!;
         await streamModelIntoTurn(settings.apiKey, model, turn, turnEl, 'retry');
       } else if (runAddedBtn) {
-        const missing = selectedModels.filter((m) => !turn.modelResponses.some((r) => r.model === m));
-        missing.forEach((m) => appendModelCard(turnEl, m));
-        await Promise.all(missing.map((m) => streamModelIntoTurn(settings.apiKey, m, turn, turnEl, 'model')));
-        renderFusedResult(turnEl, turn, true);
+        await runMissingModels(turn, turnEl, settings.apiKey);
       } else if (retryFusionBtn) {
         const fusedEl = turnEl.querySelector('[data-fused-content]');
         if (fusedEl) fusedEl.innerHTML = '<span class="animate-blink text-or-accent">▌</span>';
@@ -1066,8 +1117,11 @@ import Layout from '../layouts/Layout.astro';
     } finally {
       isStreaming = false;
       $btnSend.disabled = false;
+      updateRunAddedMainBtn();
     }
   });
+
+  document.getElementById('btn-run-added-main')!.addEventListener('click', runAddedFromMainButton);
 
   // ─── DOM helpers ─────────────────────────────────────────────────────────────
   function createTurnElement(userMessage: string, models: string[], _idx: number): HTMLElement {
