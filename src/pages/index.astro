@@ -667,7 +667,8 @@ import Layout from '../layouts/Layout.astro';
   });
 
   document.addEventListener('click', (e) => {
-    if (!document.getElementById('btn-add-model')!.contains(e.target as Node)) {
+    const t = e.target as Node;
+    if (!document.getElementById('btn-add-model')!.contains(t) && !$modelDropdown.contains(t)) {
       $modelDropdown.classList.add('hidden');
     }
   });
