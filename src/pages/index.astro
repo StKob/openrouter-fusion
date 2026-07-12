@@ -458,11 +458,15 @@ import Layout from '../layouts/Layout.astro';
       const retry = isLast && status !== 'ok'
         ? `<button data-retry-model="${model}" class="text-[11px] px-2 py-0.5 rounded border border-or-accent/40 text-or-accent hover:bg-or-accent/10 transition-colors">Retry</button>`
         : '';
+      const discard = isLast
+        ? `<button data-discard-model="${model}" title="Remove this response from the turn (excluded from synthesis)" class="text-[11px] px-2 py-0.5 rounded border border-red-400/40 text-red-400 hover:bg-red-400/10 transition-colors">Discard</button>`
+        : '';
       footEl.innerHTML = `
         <div class="flex items-center gap-2">
           ${statusBadge(status, r.finishReason)}
           <span class="text-[10px] text-gray-400 dark:text-or-muted">${formatUsage(r.usage)}</span>
           <span class="ml-auto"></span>
+          ${discard}
           ${retry}
         </div>`;
     }
@@ -989,10 +993,21 @@ import Layout from '../layouts/Layout.astro';
     const retryModelBtn = target.closest('[data-retry-model]') as HTMLElement | null;
     const retryFusionBtn = target.closest('[data-retry-fusion]') as HTMLElement | null;
     const runAddedBtn = target.closest('[data-run-added]') as HTMLElement | null;
-    if (!retryModelBtn && !retryFusionBtn && !runAddedBtn) return;
+    const discardBtn = target.closest('[data-discard-model]') as HTMLElement | null;
+    if (!retryModelBtn && !retryFusionBtn && !runAddedBtn && !discardBtn) return;
     if (isStreaming || !activeRun || activeRun.turns.length === 0) return;
     const turn = activeRun.turns[activeRun.turns.length - 1]!;
     turn.calls ??= [];
+    if (discardBtn) {
+      // Local removal only — no API call; the call log keeps the original entry
+      const model = discardBtn.getAttribute('data-discard-model')!;
+      turn.modelResponses = turn.modelResponses.filter((r) => r.model !== model);
+      const discardTurnEl = target.closest('.turn-block') as HTMLElement | null;
+      discardTurnEl?.querySelector(`[data-model-content="${model}"]`)?.parentElement?.remove();
+      persist('complete');
+      refreshLastTurnControls();
+      return;
+    }
     if (!lastMessages) {
       // Rebuild the last turn's request from persisted state (after reload/run switch)
       const history: { role: string; content: string }[] = [];
