@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { applyChunk, buildLogEntry, formatPricePer1M, buildMessages, newStreamResult, splitSSEBuffer, partitionResponses, decideSynthesis, shouldPauseSynthesis, buildFusionPrompt } from '../src/scripts/fusion';
-import { formatUsage, slugify, runFilename, runToMarkdown } from '../src/scripts/storage';
+import { formatUsage, slugify, runFilename, runToMarkdown, getSettings } from '../src/scripts/storage';
 import type { FusionRun } from '../src/scripts/storage';
 
 describe('applyChunk', () => {
@@ -255,5 +255,24 @@ describe('formatPricePer1M', () => {
   });
   it('hides sentinel (negative) pricing used by alias models', () => {
     expect(formatPricePer1M({ prompt: '-1', completion: '-1' })).toBe('');
+  });
+});
+
+describe('getSettings', () => {
+  it('returns defaults including temperature and effort outside a browser', () => {
+    // vitest runs in node: localStorage access throws, the catch returns defaults
+    expect(getSettings()).toEqual({ apiKey: '', fusionModel: 'auto', theme: 'dark', temperature: '', effort: 'off' });
+  });
+});
+
+describe('runToMarkdown judge analysis', () => {
+  it('includes the judge analysis section when present', () => {
+    const run = { ...sampleRun, turns: [{ ...sampleRun.turns[0]!, judgeAnalysis: '**Consensus**\n- both agree' }] };
+    const md = runToMarkdown(run);
+    expect(md).toContain('### Judge analysis');
+    expect(md).toContain('- both agree');
+  });
+  it('omits the section when absent', () => {
+    expect(runToMarkdown(sampleRun)).not.toContain('### Judge analysis');
   });
 });

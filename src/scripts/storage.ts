@@ -17,7 +17,7 @@ export interface ModelResponse {
 export interface LogEntry {
   ts: number;
   durationMs: number;
-  kind: 'model' | 'synthesis' | 'retry';
+  kind: 'model' | 'synthesis' | 'retry' | 'judge';
   model: string;
   genId: string | null;
   provider: string | null;
@@ -40,6 +40,7 @@ export interface Turn {
   userMessage: string;
   modelResponses: ModelResponse[];
   fusedResponse: string;
+  judgeAnalysis?: string;   // judge's comparison — markdown, or raw judge text when JSON parse failed
   fusion?: FusionMeta;
   calls?: LogEntry[];
 }
@@ -57,7 +58,11 @@ export interface Settings {
   apiKey: string;
   fusionModel: string;
   theme: 'dark' | 'light';
+  temperature: string;                          // raw input value; '' = provider default (param omitted)
+  effort: 'off' | 'low' | 'medium' | 'high';    // 'off' = reasoning param omitted
 }
+
+const SETTINGS_DEFAULTS: Settings = { apiKey: '', fusionModel: 'auto', theme: 'dark', temperature: '', effort: 'off' };
 
 // ─── Keys ─────────────────────────────────────────────────────────────────────
 
@@ -69,9 +74,9 @@ const RUNS_KEY = 'or_fusion_runs';
 export function getSettings(): Settings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (raw) return JSON.parse(raw) as Settings;
+    if (raw) return { ...SETTINGS_DEFAULTS, ...JSON.parse(raw) };
   } catch {}
-  return { apiKey: '', fusionModel: 'auto', theme: 'dark' };
+  return { ...SETTINGS_DEFAULTS };
 }
 
 export function saveSettings(s: Partial<Settings>): void {
@@ -157,6 +162,9 @@ export function runToMarkdown(run: FusionRun): string {
       const status = r.error ? `error: ${r.error}` : r.finishReason === 'length' ? 'truncated' : 'ok';
       const usage = formatUsage(r.usage);
       lines.push(`### ${r.model} (${status}${usage ? ` · ${usage}` : ''})`, '', r.content || '_(no content)_', '');
+    }
+    if (turn.judgeAnalysis) {
+      lines.push('### Judge analysis', '', turn.judgeAnalysis, '');
     }
     lines.push(`### Fused answer${turn.fusion?.skipped ? ` (synthesis skipped: ${turn.fusion.skipped})` : ''}`, '');
     lines.push(turn.fusedResponse || '_(none)_', '');
