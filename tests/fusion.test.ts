@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyChunk, buildLogEntry, formatPricePer1M, buildMessages, newStreamResult, splitSSEBuffer, partitionResponses, decideSynthesis, shouldPauseSynthesis, buildJudgePrompt, buildWriterPrompt, parseJudgeAnalysis, analysisToMarkdown, buildRequestBody, toRunParams, runSynthesis } from '../src/scripts/fusion';
+import { applyChunk, buildLogEntry, formatPricePer1M, buildMessages, newStreamResult, splitSSEBuffer, partitionResponses, decideSynthesis, shouldPauseSynthesis, buildJudgePrompt, buildWriterPrompt, parseJudgeAnalysis, analysisToMarkdown, buildRequestBody, toRunParams, runSynthesis, computePresets } from '../src/scripts/fusion';
 import { formatUsage, slugify, runFilename, runToMarkdown, getSettings } from '../src/scripts/storage';
 import type { FusionRun, LogEntry } from '../src/scripts/storage';
 
@@ -411,5 +411,51 @@ describe('runSynthesis (two-stage, DI-mocked stream)', () => {
     expect(single.skipped).toBe('single');
     expect(single.fusedContent).toBe('Answer one');
     expect(calls.length).toBe(0);
+  });
+});
+
+describe('computePresets', () => {
+  const m = (id: string, prompt: string, completion: string, ctx: number) =>
+    ({ id, name: id, pricing: { prompt, completion }, context_length: ctx });
+
+  it('quality = priciest distinct authors; budget = cheapest paid first', () => {
+    const models = [
+      m('oa/big', '0.00001', '0.00003', 128000),
+      m('oa/mini', '0.0000001', '0.0000004', 128000),
+      m('ant/flagship', '0.000008', '0.000024', 200000),
+      m('goo/pro', '0.000007', '0.000021', 1000000),
+      m('goo/flash', '0.0000002', '0.0000006', 1000000),
+      m('free/tiny', '0', '0', 8000),
+    ];
+    const p = computePresets(models);
+    expect(p.quality).toEqual(['oa/big', 'ant/flagship', 'goo/pro']);
+    expect(p.budget).toEqual(['oa/mini', 'goo/flash', 'ant/flagship']);
+  });
+
+  it('fills by rank when fewer than 3 authors exist', () => {
+    const models = [m('oa/big', '0.00001', '0.00003', 128000), m('oa/mid', '0.000005', '0.000015', 128000), m('oa/mini', '0.000001', '0.000003', 128000)];
+    expect(computePresets(models).quality).toEqual(['oa/big', 'oa/mid', 'oa/mini']);
+  });
+
+  it('all-free catalog degrades to context-length ranking (guardrailed accounts)', () => {
+    const models = [m('a/s', '0', '0', 8000), m('b/m', '0', '0', 32000), m('c/l', '0', '0', 128000), m('d/xl', '0', '0', 256000)];
+    const p = computePresets(models);
+    expect(p.quality).toEqual(['d/xl', 'c/l', 'b/m']);
+    expect(p.budget).toEqual(['d/xl', 'c/l', 'b/m']);
+  });
+
+  it('excludes sentinel-priced alias models and handles missing pricing/context', () => {
+    const models = [
+      { id: 'router/auto', name: 'auto', pricing: { prompt: '-1', completion: '-1' } },
+      { id: 'x/nopricing', name: 'x' },
+      m('y/paid', '0.000001', '0.000002', 4000),
+    ];
+    const p = computePresets(models as any);
+    expect(p.quality).toEqual(['y/paid', 'x/nopricing']);
+    expect(p.quality).not.toContain('router/auto');
+  });
+
+  it('returns empty presets for an empty catalog', () => {
+    expect(computePresets([])).toEqual({ quality: [], budget: [] });
   });
 });

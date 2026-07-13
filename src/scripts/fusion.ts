@@ -73,20 +73,48 @@ export function buildRequestBody(
   };
 }
 
-// ─── Presets ──────────────────────────────────────────────────────────────────
+// ─── Presets (computed from the live model list) ─────────────────────────────
 
-export const PRESETS = {
-  quality: [
-    'openai/gpt-4o',
-    'anthropic/claude-3.5-sonnet',
-    'google/gemini-pro-1.5',
-  ],
-  budget: [
-    'openai/gpt-4o-mini',
-    'anthropic/claude-3-haiku',
-    'google/gemini-flash-1.5',
-  ],
+export interface Presets {
+  quality: string[];
+  budget: string[];
+}
+
+const modelPrice = (m: ORModel) => {
+  const p = parseFloat(m.pricing?.prompt ?? '0') + parseFloat(m.pricing?.completion ?? '0');
+  return Number.isFinite(p) ? p : 0;
 };
+const modelCtx = (m: ORModel) => m.context_length ?? m.top_provider?.context_length ?? 0;
+const modelAuthor = (id: string) => id.split('/')[0] ?? id;
+
+// One model per author first (panel diversity), then fill by rank
+function pickDiverse(ordered: ORModel[], n: number): string[] {
+  const picked: ORModel[] = [];
+  const seen = new Set<string>();
+  for (const m of ordered) {
+    if (picked.length === n) break;
+    if (seen.has(modelAuthor(m.id))) continue;
+    seen.add(modelAuthor(m.id));
+    picked.push(m);
+  }
+  for (const m of ordered) {
+    if (picked.length === n) break;
+    if (!picked.includes(m)) picked.push(m);
+  }
+  return picked.map((m) => m.id);
+}
+
+export function computePresets(models: ORModel[]): Presets {
+  // negative price = variable/unknown sentinel (alias/router models) — unrankable, skip
+  const ranked = models.filter((m) => modelPrice(m) >= 0);
+  const byPriceDesc = [...ranked].sort((a, b) => modelPrice(b) - modelPrice(a) || modelCtx(b) - modelCtx(a));
+  const paidAsc = ranked.filter((m) => modelPrice(m) > 0).sort((a, b) => modelPrice(a) - modelPrice(b) || modelCtx(b) - modelCtx(a));
+  const freeByCtx = ranked.filter((m) => modelPrice(m) === 0).sort((a, b) => modelCtx(b) - modelCtx(a));
+  return {
+    quality: pickDiverse(byPriceDesc, 3),
+    budget: pickDiverse([...paidAsc, ...freeByCtx], 3),
+  };
+}
 
 // ─── Stream result ────────────────────────────────────────────────────────────
 
