@@ -40,6 +40,39 @@ export function clearModelCache(): void {
   _modelCache = null;
 }
 
+// ─── Run params (temperature / reasoning effort) ─────────────────────────────
+
+export interface RunParams {
+  temperature: number | null;                   // null = omit (provider default)
+  effort: 'off' | 'low' | 'medium' | 'high';    // 'off' = omit reasoning param
+}
+
+export const DEFAULT_RUN_PARAMS: RunParams = { temperature: null, effort: 'off' };
+
+// Settings store the raw input string; convert + clamp here.
+export function toRunParams(s: { temperature: string; effort: RunParams['effort'] }): RunParams {
+  const t = parseFloat(s.temperature);
+  return {
+    temperature: Number.isFinite(t) ? Math.min(2, Math.max(0, t)) : null,
+    effort: s.effort ?? 'off',
+  };
+}
+
+export function buildRequestBody(
+  model: string,
+  messages: { role: string; content: string }[],
+  params: RunParams = DEFAULT_RUN_PARAMS
+): Record<string, unknown> {
+  return {
+    model,
+    messages,
+    stream: true,
+    usage: { include: true },
+    ...(params.temperature !== null ? { temperature: params.temperature } : {}),
+    ...(params.effort !== 'off' ? { reasoning: { effort: params.effort } } : {}),
+  };
+}
+
 // ─── Presets ──────────────────────────────────────────────────────────────────
 
 export const PRESETS = {
@@ -143,7 +176,8 @@ export async function streamCompletion(
   apiKey: string,
   model: string,
   messages: { role: string; content: string }[],
-  onChunk: (text: string) => void
+  onChunk: (text: string) => void,
+  params: RunParams = DEFAULT_RUN_PARAMS
 ): Promise<StreamResult> {
   const acc = newStreamResult();
   try {
@@ -155,7 +189,7 @@ export async function streamCompletion(
         'HTTP-Referer': window.location.origin,
         'X-Title': 'OpenRouter Fusion Replica',
       },
-      body: JSON.stringify({ model, messages, stream: true, usage: { include: true } }),
+      body: JSON.stringify(buildRequestBody(model, messages, params)),
     });
 
     if (!res.ok) {

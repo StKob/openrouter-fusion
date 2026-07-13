@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyChunk, buildLogEntry, formatPricePer1M, buildMessages, newStreamResult, splitSSEBuffer, partitionResponses, decideSynthesis, shouldPauseSynthesis, buildFusionPrompt } from '../src/scripts/fusion';
+import { applyChunk, buildLogEntry, formatPricePer1M, buildMessages, newStreamResult, splitSSEBuffer, partitionResponses, decideSynthesis, shouldPauseSynthesis, buildFusionPrompt, buildRequestBody, toRunParams } from '../src/scripts/fusion';
 import { formatUsage, slugify, runFilename, runToMarkdown, getSettings } from '../src/scripts/storage';
 import type { FusionRun } from '../src/scripts/storage';
 
@@ -274,5 +274,34 @@ describe('runToMarkdown judge analysis', () => {
   });
   it('omits the section when absent', () => {
     expect(runToMarkdown(sampleRun)).not.toContain('### Judge analysis');
+  });
+});
+
+describe('buildRequestBody', () => {
+  const msgs = [{ role: 'user', content: 'q' }];
+  it('omits temperature and reasoning by default', () => {
+    expect(buildRequestBody('m/x', msgs)).toEqual({ model: 'm/x', messages: msgs, stream: true, usage: { include: true } });
+  });
+  it('includes temperature 0 when set (0 is not "unset")', () => {
+    expect(buildRequestBody('m/x', msgs, { temperature: 0, effort: 'off' })).toMatchObject({ temperature: 0 });
+  });
+  it('includes reasoning effort when not off', () => {
+    const b = buildRequestBody('m/x', msgs, { temperature: null, effort: 'high' });
+    expect(b).toMatchObject({ reasoning: { effort: 'high' } });
+    expect(b).not.toHaveProperty('temperature');
+  });
+});
+
+describe('toRunParams', () => {
+  it('empty temperature means null (omit)', () => {
+    expect(toRunParams({ temperature: '', effort: 'off' })).toEqual({ temperature: null, effort: 'off' });
+  });
+  it('parses and clamps temperature to [0, 2]', () => {
+    expect(toRunParams({ temperature: '0.7', effort: 'low' })).toEqual({ temperature: 0.7, effort: 'low' });
+    expect(toRunParams({ temperature: '9', effort: 'off' }).temperature).toBe(2);
+    expect(toRunParams({ temperature: '-1', effort: 'off' }).temperature).toBe(0);
+  });
+  it('non-numeric temperature means null', () => {
+    expect(toRunParams({ temperature: 'abc', effort: 'off' }).temperature).toBeNull();
   });
 });
