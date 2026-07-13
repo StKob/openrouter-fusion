@@ -507,6 +507,14 @@ import Layout from '../layouts/Layout.astro';
     updateTurnCost(turnEl, turn);
   }
 
+  function analysisBlockHtml(turn: Turn): string {
+    if (!turn.judgeAnalysis) return '';
+    return `<div class="mb-3 pb-3 border-b border-or-accent/20">
+      <div class="text-[10px] font-semibold text-or-accent uppercase tracking-wider mb-1.5">Judge analysis</div>
+      <div class="text-xs opacity-90">${renderMarkdownLite(turn.judgeAnalysis)}</div>
+    </div>`;
+  }
+
   function renderFusedResult(turnEl: HTMLElement, turn: Turn, isLast: boolean) {
     const el = turnEl.querySelector('[data-fused-content]');
     if (el) {
@@ -520,7 +528,7 @@ import Layout from '../layouts/Layout.astro';
         const note = turn.fusion?.skipped === 'single'
           ? `<div class="text-[11px] text-gray-400 dark:text-or-muted mb-2">Single successful response — synthesis skipped.</div>`
           : '';
-        el.innerHTML = note + renderMarkdownLite(turn.fusedResponse);
+        el.innerHTML = note + analysisBlockHtml(turn) + renderMarkdownLite(turn.fusedResponse);
       }
     }
     const footEl = turnEl.querySelector('[data-fused-foot]');
@@ -655,6 +663,7 @@ import Layout from '../layouts/Layout.astro';
       usage: result.usage,
       error: result.error,
     });
+    turn.judgeAnalysis = undefined; // responses changed — a fresh synthesis must re-judge
     turn.calls!.push(buildLogEntry(kind, model, result));
     renderModelCardResult(turnEl, model, turn, true);
     persist('complete');
@@ -1027,6 +1036,15 @@ import Layout from '../layouts/Layout.astro';
         userMessage: message,
         fusionModel: $fusionModelSelect.value || settings.fusionModel || 'auto',
         runParams: toRunParams(settings),
+        onJudgeStart: () => {
+          const el = turnEl.querySelector('[data-fused-content]');
+          if (el) el.innerHTML = '<span class="text-xs text-gray-400 dark:text-or-muted">Judging responses…</span> <span class="animate-blink text-or-accent">▌</span>';
+        },
+        onJudgeDone: (analysisText, judgeEntry) => {
+          if (judgeEntry) turn.calls!.push(judgeEntry);
+          if (analysisText) turn.judgeAnalysis = analysisText;
+          persist('partial');
+        },
         onModelChunk: (model, chunk) => {
           modelBuffers[model] += chunk;
           upsertResponse(turn, model, { model, content: modelBuffers[model] });
@@ -1051,7 +1069,7 @@ import Layout from '../layouts/Layout.astro';
           fusionBuffer += chunk;
           turn.fusedResponse = fusionBuffer;
           const el = turnEl.querySelector('[data-fused-content]');
-          if (el) el.innerHTML = renderMarkdownLite(fusionBuffer) + '<span class="animate-blink text-or-accent">▌</span>';
+          if (el) el.innerHTML = analysisBlockHtml(turn) + renderMarkdownLite(fusionBuffer) + '<span class="animate-blink text-or-accent">▌</span>';
           throttledPartialSave();
           scrollBottom();
         },
@@ -1061,7 +1079,7 @@ import Layout from '../layouts/Layout.astro';
             skipped: outcome.skipped,
             finishReason: outcome.result?.finishReason ?? null,
             usage: outcome.result?.usage ?? null,
-            error: outcome.result?.error ?? null,
+            error: outcome.result?.error ?? outcome.judgeError ?? null,
           };
           if (outcome.result && outcome.model) {
             turn.calls!.push(buildLogEntry('synthesis', outcome.model, outcome.result));
@@ -1096,6 +1114,7 @@ import Layout from '../layouts/Layout.astro';
       // Local removal only — no API call; the call log keeps the original entry
       const model = discardBtn.getAttribute('data-discard-model')!;
       turn.modelResponses = turn.modelResponses.filter((r) => r.model !== model);
+      turn.judgeAnalysis = undefined; // responses changed — a fresh synthesis must re-judge
       const discardTurnEl = target.closest('.turn-block') as HTMLElement | null;
       discardTurnEl?.querySelector(`[data-model-content="${model}"]`)?.parentElement?.remove();
       persist('complete');
@@ -1120,25 +1139,35 @@ import Layout from '../layouts/Layout.astro';
         const fusedEl = turnEl.querySelector('[data-fused-content]');
         if (fusedEl) fusedEl.innerHTML = '<span class="animate-blink text-or-accent">▌</span>';
         let buffer = '';
-        const outcome = await runSynthesis(
-          settings.apiKey,
-          $fusionModelSelect.value || settings.fusionModel || 'auto',
-          activeRun.models,
-          turn.userMessage,
-          turn.modelResponses,
-          (chunk) => {
+        const outcome = await runSynthesis({
+          apiKey: settings.apiKey,
+          fusionModel: $fusionModelSelect.value || settings.fusionModel || 'auto',
+          models: activeRun.models,
+          userMessage: turn.userMessage,
+          responses: turn.modelResponses,
+          params: toRunParams(settings),
+          existingAnalysis: turn.judgeAnalysis ?? null,
+          onJudgeStart: () => {
+            if (fusedEl) fusedEl.innerHTML = '<span class="text-xs text-gray-400 dark:text-or-muted">Judging responses…</span> <span class="animate-blink text-or-accent">▌</span>';
+          },
+          onJudgeDone: (analysisText, judgeEntry) => {
+            if (judgeEntry) turn.calls.push(judgeEntry);
+            if (analysisText) turn.judgeAnalysis = analysisText;
+            persist('partial');
+          },
+          onChunk: (chunk) => {
             buffer += chunk;
             turn.fusedResponse = buffer;
-            if (fusedEl) fusedEl.innerHTML = renderMarkdownLite(buffer) + '<span class="animate-blink text-or-accent">▌</span>';
+            if (fusedEl) fusedEl.innerHTML = analysisBlockHtml(turn) + renderMarkdownLite(buffer) + '<span class="animate-blink text-or-accent">▌</span>';
             throttledPartialSave();
-          }
-        );
+          },
+        });
         turn.fusedResponse = outcome.fusedContent;
         turn.fusion = {
           skipped: outcome.skipped,
           finishReason: outcome.result?.finishReason ?? null,
           usage: outcome.result?.usage ?? null,
-          error: outcome.result?.error ?? null,
+          error: outcome.result?.error ?? outcome.judgeError ?? null,
         };
         if (outcome.result && outcome.model) {
           turn.calls.push(buildLogEntry('synthesis', outcome.model, outcome.result));
