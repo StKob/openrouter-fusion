@@ -347,10 +347,10 @@ describe('runSynthesis (two-stage, DI-mocked stream)', () => {
   const judgeJson = JSON.stringify({ consensus: ['both agree'], contradictions: [], partial_coverage: [], unique_insights: [], blind_spots: [] });
 
   function fakeStream(judgeContent: string, judgeError: string | null = null) {
-    const calls: { model: string; prompt: string }[] = [];
-    const fn = (async (_key: string, model: string, messages: { role: string; content: string }[], onChunk: (t: string) => void) => {
+    const calls: { model: string; prompt: string; params: any }[] = [];
+    const fn = (async (_key: string, model: string, messages: { role: string; content: string }[], onChunk: (t: string) => void, params: any) => {
       const prompt = messages[0]!.content;
-      calls.push({ model, prompt });
+      calls.push({ model, prompt, params });
       const isWriter = prompt.includes('## Judge Analysis');
       const content = isWriter ? 'fused answer' : judgeContent;
       const error = isWriter ? null : judgeError;
@@ -411,6 +411,22 @@ describe('runSynthesis (two-stage, DI-mocked stream)', () => {
     expect(single.skipped).toBe('single');
     expect(single.fusedContent).toBe('Answer one');
     expect(calls.length).toBe(0);
+  });
+
+  it('forwards params to both judge and writer calls, and defaults when omitted', async () => {
+    const { fn, calls } = fakeStream(judgeJson);
+    let judgeStarted = false;
+    const params = { temperature: 0, effort: 'low' as const };
+    await runSynthesis({ ...base, params, onJudgeStart: () => { judgeStarted = true; }, onChunk: () => {}, _stream: fn });
+    expect(judgeStarted).toBe(true);
+    expect(calls.length).toBe(2);
+    expect(calls[0]!.params).toEqual(params); // judge leg
+    expect(calls[1]!.params).toEqual(params); // writer leg
+
+    const { fn: fn2, calls: calls2 } = fakeStream(judgeJson);
+    await runSynthesis({ ...base, onChunk: () => {}, _stream: fn2 });
+    expect(calls2[0]!.params).toEqual({ temperature: null, effort: 'off' }); // DEFAULT_RUN_PARAMS applied when opts.params omitted
+    expect(calls2[1]!.params).toEqual({ temperature: null, effort: 'off' });
   });
 });
 
