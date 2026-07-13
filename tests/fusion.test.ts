@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyChunk, buildLogEntry, formatPricePer1M, buildMessages, newStreamResult, splitSSEBuffer, partitionResponses, decideSynthesis, shouldPauseSynthesis, buildFusionPrompt, buildRequestBody, toRunParams } from '../src/scripts/fusion';
+import { applyChunk, buildLogEntry, formatPricePer1M, buildMessages, newStreamResult, splitSSEBuffer, partitionResponses, decideSynthesis, shouldPauseSynthesis, buildJudgePrompt, buildWriterPrompt, parseJudgeAnalysis, analysisToMarkdown, buildRequestBody, toRunParams } from '../src/scripts/fusion';
 import { formatUsage, slugify, runFilename, runToMarkdown, getSettings } from '../src/scripts/storage';
 import type { FusionRun } from '../src/scripts/storage';
 
@@ -149,15 +149,6 @@ describe('shouldPauseSynthesis', () => {
   });
 });
 
-describe('buildFusionPrompt', () => {
-  it('numbers responses, includes content, labels truncated ones', () => {
-    const p = buildFusionPrompt('the question', [ok1, truncated]);
-    expect(p).toContain('## User Question\nthe question');
-    expect(p).toContain('### Response 1 (a/one)\nAnswer one');
-    expect(p).toContain('### Response 2 (c/three) (cut off mid-generation)\nCut off answ');
-  });
-});
-
 describe('formatUsage', () => {
   it('formats tokens and cost', () => {
     expect(formatUsage({ promptTokens: 1234, completionTokens: 567, cost: 0.0042 })).toBe('1,234→567 tok · $0.0042');
@@ -303,5 +294,51 @@ describe('toRunParams', () => {
   });
   it('non-numeric temperature means null', () => {
     expect(toRunParams({ temperature: 'abc', effort: 'off' }).temperature).toBeNull();
+  });
+});
+
+describe('buildJudgePrompt', () => {
+  it('demands the five JSON keys and includes numbered responses with truncation notes', () => {
+    const p = buildJudgePrompt('the question', [ok1, truncated]);
+    for (const k of ['"consensus"', '"contradictions"', '"partial_coverage"', '"unique_insights"', '"blind_spots"']) {
+      expect(p).toContain(k);
+    }
+    expect(p).toContain('## User Question\nthe question');
+    expect(p).toContain('### Response 1 (a/one)\nAnswer one');
+    expect(p).toContain('### Response 2 (c/three) (cut off mid-generation)\nCut off answ');
+  });
+});
+
+describe('parseJudgeAnalysis', () => {
+  const good = { consensus: ['a'], contradictions: [], partial_coverage: ['b'], unique_insights: [], blind_spots: [] };
+  it('parses clean JSON', () => {
+    expect(parseJudgeAnalysis(JSON.stringify(good))).toEqual(good);
+  });
+  it('strips markdown code fences', () => {
+    expect(parseJudgeAnalysis('```json\n' + JSON.stringify(good) + '\n```')).toEqual(good);
+  });
+  it('coerces missing keys to empty arrays', () => {
+    expect(parseJudgeAnalysis('{"consensus":["x"]}')).toEqual({ consensus: ['x'], contradictions: [], partial_coverage: [], unique_insights: [], blind_spots: [] });
+  });
+  it('returns null for prose, non-objects, and JSON without any expected key', () => {
+    expect(parseJudgeAnalysis('The models mostly agree that…')).toBeNull();
+    expect(parseJudgeAnalysis('[1,2]')).toBeNull();
+    expect(parseJudgeAnalysis('{"verdict":"fine"}')).toBeNull();
+  });
+});
+
+describe('analysisToMarkdown', () => {
+  it('renders bold section titles with bullets and skips empty sections', () => {
+    const md = analysisToMarkdown({ consensus: ['both agree'], contradictions: [], partial_coverage: [], unique_insights: ['only one saw it'], blind_spots: [] });
+    expect(md).toBe('**Consensus**\n- both agree\n\n**Unique insights**\n- only one saw it');
+  });
+});
+
+describe('buildWriterPrompt', () => {
+  it('contains the question and the analysis, and never raw panel responses', () => {
+    const p = buildWriterPrompt('the question', '**Consensus**\n- both agree');
+    expect(p).toContain('## User Question\nthe question');
+    expect(p).toContain('## Judge Analysis\n**Consensus**\n- both agree');
+    expect(p).not.toContain('### Response 1');
   });
 });

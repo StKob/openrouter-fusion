@@ -254,28 +254,95 @@ export function decideSynthesis(responses: ModelResponse[]): SynthesisDecision {
   return { mode: 'run', responses: ok };
 }
 
-export function buildFusionPrompt(userMessage: string, responses: ModelResponse[]): string {
-  const parts = responses
+// Shared response formatting for the judge prompt
+function formatResponses(responses: ModelResponse[]): string {
+  return responses
     .map((r, i) => {
       const note = r.finishReason === 'length' ? ' (cut off mid-generation)' : '';
       return `### Response ${i + 1} (${r.model})${note}\n${r.content}`;
     })
     .join('\n\n');
+}
 
-  return `You are a synthesis AI. You have been given multiple AI model responses to the same user question. Your task is to analyze all responses and produce a single, comprehensive, well-structured answer that:
-- Captures the best insights from each response
-- Resolves any contradictions with sound reasoning
-- Is more complete and accurate than any individual response
-- Is clearly written and well-organized
+// ─── Judge / writer (two-stage synthesis, per OpenRouter Fusion research) ─────
+
+export const JUDGE_KEYS = ['consensus', 'contradictions', 'partial_coverage', 'unique_insights', 'blind_spots'] as const;
+
+export interface JudgeAnalysis {
+  consensus: string[];
+  contradictions: string[];
+  partial_coverage: string[];
+  unique_insights: string[];
+  blind_spots: string[];
+}
+
+export function buildJudgePrompt(userMessage: string, responses: ModelResponse[]): string {
+  return `You are a judge comparing multiple AI model responses to the same user question. Analyze them and return ONLY a JSON object — no markdown fences, no prose — with exactly these keys, each an array of strings:
+- "consensus": points all or most responses agree on (treat as higher confidence)
+- "contradictions": where responses disagree — say which position is better supported and why
+- "partial_coverage": relevant points only some responses addressed
+- "unique_insights": valuable points contributed by a single response
+- "blind_spots": relevant aspects none of the responses addressed
+
+Keep every item one concise sentence. Use [] for empty categories.
 
 ## User Question
 ${userMessage}
 
 ## Model Responses
-${parts}
+${formatResponses(responses)}`;
+}
 
-## Your Fused Answer
-Synthesize the above responses into the definitive best answer:`;
+export function parseJudgeAnalysis(text: string): JudgeAnalysis | null {
+  const stripped = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  let obj: unknown;
+  try { obj = JSON.parse(stripped); } catch { return null; }
+  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return null;
+  const rec = obj as Record<string, unknown>;
+  if (!JUDGE_KEYS.some((k) => Array.isArray(rec[k]))) return null;
+  const toArr = (v: unknown) => (Array.isArray(v) ? v.map(String) : []);
+  return {
+    consensus: toArr(rec.consensus),
+    contradictions: toArr(rec.contradictions),
+    partial_coverage: toArr(rec.partial_coverage),
+    unique_insights: toArr(rec.unique_insights),
+    blind_spots: toArr(rec.blind_spots),
+  };
+}
+
+const JUDGE_SECTION_TITLES: Record<(typeof JUDGE_KEYS)[number], string> = {
+  consensus: 'Consensus',
+  contradictions: 'Contradictions',
+  partial_coverage: 'Partial coverage',
+  unique_insights: 'Unique insights',
+  blind_spots: 'Blind spots',
+};
+
+// Bold titles (not headings): renders compactly inside the fused card and in MD exports
+export function analysisToMarkdown(a: JudgeAnalysis): string {
+  const sections: string[] = [];
+  for (const key of JUDGE_KEYS) {
+    if (a[key].length === 0) continue;
+    sections.push(`**${JUDGE_SECTION_TITLES[key]}**\n${a[key].map((i) => `- ${i}`).join('\n')}`);
+  }
+  return sections.join('\n\n');
+}
+
+export function buildWriterPrompt(userMessage: string, analysisText: string): string {
+  return `You are writing the definitive answer to the user's question. A judge has compared several AI model responses to this question and produced the analysis below. Write a single, comprehensive, well-structured answer grounded in that analysis:
+- Treat consensus points as high-confidence facts
+- Resolve contradictions in favor of the better-supported position
+- Work in the unique insights where they add value
+- Address the blind spots if you can
+Do not mention the judge, the analysis, or the other models — just answer the question directly.
+
+## User Question
+${userMessage}
+
+## Judge Analysis
+${analysisText}
+
+## Your Answer`;
 }
 
 export interface SynthesisOutcome {
@@ -297,7 +364,7 @@ export async function runSynthesis(
   if (decision.mode === 'all-failed') return { fusedContent: '', result: null, skipped: 'all-failed', model: null };
   if (decision.mode === 'single') return { fusedContent: decision.response.content, result: null, skipped: 'single', model: null };
   const fusionModelId = fusionModel === 'auto' ? models[0]! : fusionModel;
-  const messages = [{ role: 'user', content: buildFusionPrompt(userMessage, decision.responses) }];
+  const messages = [{ role: 'user', content: buildJudgePrompt(userMessage, decision.responses) }];
   const result = await streamCompletion(apiKey, fusionModelId, messages, onChunk);
   return { fusedContent: result.content, result, skipped: null, model: fusionModelId };
 }
