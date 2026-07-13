@@ -58,6 +58,22 @@ export function toRunParams(s: { temperature: string; effort: RunParams['effort'
   };
 }
 
+// Per-run overrides (FusionRun.temperature/effort are structurally compatible)
+export interface RunOverrides {
+  temperature?: string;
+  effort?: 'inherit' | 'off' | 'low' | 'medium' | 'high';
+}
+
+export function resolveRunParams(
+  run: RunOverrides | null | undefined,
+  settings: { temperature: string; effort: RunParams['effort'] }
+): RunParams {
+  return toRunParams({
+    temperature: run?.temperature?.trim() ? run.temperature : settings.temperature,
+    effort: run?.effort && run.effort !== 'inherit' ? run.effort : settings.effort,
+  });
+}
+
 export function buildRequestBody(
   model: string,
   messages: { role: string; content: string }[],

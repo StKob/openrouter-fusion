@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyChunk, buildLogEntry, formatPricePer1M, buildMessages, newStreamResult, splitSSEBuffer, partitionResponses, decideSynthesis, shouldPauseSynthesis, buildJudgePrompt, buildWriterPrompt, parseJudgeAnalysis, analysisToMarkdown, buildRequestBody, toRunParams, runSynthesis, computePresets } from '../src/scripts/fusion';
+import { applyChunk, buildLogEntry, formatPricePer1M, buildMessages, newStreamResult, splitSSEBuffer, partitionResponses, decideSynthesis, shouldPauseSynthesis, buildJudgePrompt, buildWriterPrompt, parseJudgeAnalysis, analysisToMarkdown, buildRequestBody, toRunParams, resolveRunParams, runSynthesis, computePresets } from '../src/scripts/fusion';
 import { formatUsage, slugify, runFilename, runToMarkdown, getSettings } from '../src/scripts/storage';
 import type { FusionRun, LogEntry } from '../src/scripts/storage';
 
@@ -473,5 +473,25 @@ describe('computePresets', () => {
 
   it('returns empty presets for an empty catalog', () => {
     expect(computePresets([])).toEqual({ quality: [], budget: [] });
+  });
+});
+
+describe('resolveRunParams', () => {
+  const settings = { temperature: '0.5', effort: 'low' as const };
+  it('inherits both when run has no overrides', () => {
+    expect(resolveRunParams(null, settings)).toEqual({ temperature: 0.5, effort: 'low' });
+    expect(resolveRunParams({}, settings)).toEqual({ temperature: 0.5, effort: 'low' });
+    expect(resolveRunParams({ temperature: '', effort: 'inherit' }, settings)).toEqual({ temperature: 0.5, effort: 'low' });
+  });
+  it('run overrides win per-field (temperature 0 is a real override)', () => {
+    expect(resolveRunParams({ temperature: '0', effort: 'high' }, settings)).toEqual({ temperature: 0, effort: 'high' });
+  });
+  it('mixed: one field overrides, the other inherits', () => {
+    expect(resolveRunParams({ temperature: '1.2' }, settings)).toEqual({ temperature: 1.2, effort: 'low' });
+    expect(resolveRunParams({ effort: 'off' }, settings)).toEqual({ temperature: 0.5, effort: 'off' });
+  });
+  it('clamps overrides and treats whitespace as inherit', () => {
+    expect(resolveRunParams({ temperature: '9' }, settings).temperature).toBe(2);
+    expect(resolveRunParams({ temperature: '  ' }, settings).temperature).toBe(0.5);
   });
 });

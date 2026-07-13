@@ -51,6 +51,8 @@ export interface FusionRun {
   createdAt: number;
   models: string[];
   systemPrompt: string;
+  temperature?: string;                                     // per-run override; ''/absent = inherit Settings
+  effort?: 'inherit' | 'off' | 'low' | 'medium' | 'high';   // 'inherit'/absent = inherit Settings
   turns: Turn[];
 }
 
