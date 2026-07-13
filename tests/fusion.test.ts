@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { applyChunk, buildLogEntry, formatPricePer1M, buildMessages, newStreamResult, splitSSEBuffer, partitionResponses, decideSynthesis, shouldPauseSynthesis, buildJudgePrompt, buildWriterPrompt, parseJudgeAnalysis, analysisToMarkdown, buildRequestBody, toRunParams } from '../src/scripts/fusion';
+import { applyChunk, buildLogEntry, formatPricePer1M, buildMessages, newStreamResult, splitSSEBuffer, partitionResponses, decideSynthesis, shouldPauseSynthesis, buildJudgePrompt, buildWriterPrompt, parseJudgeAnalysis, analysisToMarkdown, buildRequestBody, toRunParams, runSynthesis } from '../src/scripts/fusion';
 import { formatUsage, slugify, runFilename, runToMarkdown, getSettings } from '../src/scripts/storage';
-import type { FusionRun } from '../src/scripts/storage';
+import type { FusionRun, LogEntry } from '../src/scripts/storage';
 
 describe('applyChunk', () => {
   it('accumulates delta content and returns the delta', () => {
@@ -340,5 +340,76 @@ describe('buildWriterPrompt', () => {
     expect(p).toContain('## User Question\nthe question');
     expect(p).toContain('## Judge Analysis\n**Consensus**\n- both agree');
     expect(p).not.toContain('### Response 1');
+  });
+});
+
+describe('runSynthesis (two-stage, DI-mocked stream)', () => {
+  const judgeJson = JSON.stringify({ consensus: ['both agree'], contradictions: [], partial_coverage: [], unique_insights: [], blind_spots: [] });
+
+  function fakeStream(judgeContent: string, judgeError: string | null = null) {
+    const calls: { model: string; prompt: string }[] = [];
+    const fn = (async (_key: string, model: string, messages: { role: string; content: string }[], onChunk: (t: string) => void) => {
+      const prompt = messages[0]!.content;
+      calls.push({ model, prompt });
+      const isWriter = prompt.includes('## Judge Analysis');
+      const content = isWriter ? 'fused answer' : judgeContent;
+      const error = isWriter ? null : judgeError;
+      if (!error) onChunk(content);
+      return { ...newStreamResult(), content: error ? '' : content, finishReason: error ? null : 'stop', error };
+    }) as any;
+    return { fn, calls };
+  }
+
+  const base = { apiKey: 'k', fusionModel: 'auto', models: ['a/one', 'b/two'], userMessage: 'q', responses: [ok1, ok2] };
+
+  it('runs judge then writer; writer gets the analysis markdown, not raw responses', async () => {
+    const { fn, calls } = fakeStream(judgeJson);
+    const events: (LogEntry | null)[] = [];
+    const outcome = await runSynthesis({ ...base, onJudgeDone: (_a, e) => events.push(e), onChunk: () => {}, _stream: fn });
+    expect(calls.length).toBe(2);
+    expect(calls[0]!.model).toBe('a/one'); // auto = first source
+    expect(calls[1]!.prompt).toContain('**Consensus**\n- both agree');
+    expect(calls[1]!.prompt).not.toContain('Answer one');
+    expect(outcome.analysisText).toBe('**Consensus**\n- both agree');
+    expect(outcome.fusedContent).toBe('fused answer');
+    expect(events[0]!.kind).toBe('judge');
+  });
+
+  it('falls back to raw judge text when JSON is malformed — writer still runs', async () => {
+    const { fn, calls } = fakeStream('the models broadly agree.');
+    const outcome = await runSynthesis({ ...base, onChunk: () => {}, _stream: fn });
+    expect(outcome.analysisText).toBe('the models broadly agree.');
+    expect(calls[1]!.prompt).toContain('the models broadly agree.');
+  });
+
+  it('aborts before the writer when the judge call fails', async () => {
+    const { fn, calls } = fakeStream('', '[500] judge died');
+    const events: (LogEntry | null)[] = [];
+    const outcome = await runSynthesis({ ...base, onJudgeDone: (_a, e) => events.push(e), onChunk: () => {}, _stream: fn });
+    expect(calls.length).toBe(1);
+    expect(outcome.judgeError).toBe('[500] judge died');
+    expect(outcome.result).toBeNull();
+    expect(events[0]!.status).toBe('error');
+  });
+
+  it('reuses existingAnalysis: single writer call, judge entry is null', async () => {
+    const { fn, calls } = fakeStream(judgeJson);
+    const events: (LogEntry | null)[] = [];
+    const outcome = await runSynthesis({ ...base, existingAnalysis: '**Consensus**\n- stored', onJudgeDone: (_a, e) => events.push(e), onChunk: () => {}, _stream: fn });
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.prompt).toContain('- stored');
+    expect(events.length).toBe(1);
+    expect(events[0]).toBeNull(); // no judge entry when analysis is reused
+    expect(outcome.fusedContent).toBe('fused answer');
+  });
+
+  it('keeps skip semantics: all-failed and single make no calls', async () => {
+    const { fn, calls } = fakeStream(judgeJson);
+    const allFailed = await runSynthesis({ ...base, responses: [failed], onChunk: () => {}, _stream: fn });
+    expect(allFailed.skipped).toBe('all-failed');
+    const single = await runSynthesis({ ...base, responses: [ok1, failed], onChunk: () => {}, _stream: fn });
+    expect(single.skipped).toBe('single');
+    expect(single.fusedContent).toBe('Answer one');
+    expect(calls.length).toBe(0);
   });
 });

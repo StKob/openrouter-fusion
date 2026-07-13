@@ -347,26 +347,58 @@ ${analysisText}
 
 export interface SynthesisOutcome {
   fusedContent: string;
-  result: StreamResult | null;           // null when no API call was made
+  analysisText: string;              // markdown (or raw judge text); '' when skipped or judge failed
+  judgeError: string | null;         // set when the judge call failed (writer not attempted)
+  result: StreamResult | null;       // writer call result; null when no writer call was made
   skipped: 'all-failed' | 'single' | 'partial-failure' | null;
-  model: string | null;                  // model id actually called for synthesis
+  model: string | null;              // model id used for judge + writer
 }
 
-export async function runSynthesis(
-  apiKey: string,
-  fusionModel: string,
-  models: string[],
-  userMessage: string,
-  responses: ModelResponse[],
-  onChunk: (text: string) => void
-): Promise<SynthesisOutcome> {
+export interface SynthesisOptions {
+  apiKey: string;
+  fusionModel: string;
+  models: string[];
+  userMessage: string;
+  responses: ModelResponse[];
+  params?: RunParams;
+  existingAnalysis?: string | null;  // reuse a stored analysis (writer retry) instead of re-billing the judge
+  onJudgeStart?: () => void;
+  onJudgeDone?: (analysisText: string, judgeEntry: LogEntry | null) => void; // entry null when analysis was reused
+  onChunk: (text: string) => void;
+  _stream?: typeof streamCompletion; // test seam
+}
+
+export async function runSynthesis(opts: SynthesisOptions): Promise<SynthesisOutcome> {
+  const { apiKey, fusionModel, models, userMessage, responses, onChunk } = opts;
+  const params = opts.params ?? DEFAULT_RUN_PARAMS;
+  const stream = opts._stream ?? streamCompletion;
+
   const decision = decideSynthesis(responses);
-  if (decision.mode === 'all-failed') return { fusedContent: '', result: null, skipped: 'all-failed', model: null };
-  if (decision.mode === 'single') return { fusedContent: decision.response.content, result: null, skipped: 'single', model: null };
+  if (decision.mode === 'all-failed') return { fusedContent: '', analysisText: '', judgeError: null, result: null, skipped: 'all-failed', model: null };
+  if (decision.mode === 'single') return { fusedContent: decision.response.content, analysisText: '', judgeError: null, result: null, skipped: 'single', model: null };
   const fusionModelId = fusionModel === 'auto' ? models[0]! : fusionModel;
-  const messages = [{ role: 'user', content: buildJudgePrompt(userMessage, decision.responses) }];
-  const result = await streamCompletion(apiKey, fusionModelId, messages, onChunk);
-  return { fusedContent: result.content, result, skipped: null, model: fusionModelId };
+
+  let analysisText = opts.existingAnalysis ?? '';
+  if (analysisText) {
+    opts.onJudgeDone?.(analysisText, null);
+  } else {
+    opts.onJudgeStart?.();
+    // Judge is "non-streamed" in the research sense: nothing renders mid-flight.
+    // Implementation still uses the SSE path (no-op onChunk) to reuse all plumbing.
+    const judgeMessages = [{ role: 'user', content: buildJudgePrompt(userMessage, decision.responses) }];
+    const judgeResult = await stream(apiKey, fusionModelId, judgeMessages, () => {}, params);
+    if (judgeResult.error) {
+      opts.onJudgeDone?.('', buildLogEntry('judge', fusionModelId, judgeResult));
+      return { fusedContent: '', analysisText: '', judgeError: judgeResult.error, result: null, skipped: null, model: fusionModelId };
+    }
+    const parsed = parseJudgeAnalysis(judgeResult.content);
+    analysisText = parsed ? analysisToMarkdown(parsed) : judgeResult.content;
+    opts.onJudgeDone?.(analysisText, buildLogEntry('judge', fusionModelId, judgeResult));
+  }
+
+  const writerMessages = [{ role: 'user', content: buildWriterPrompt(userMessage, analysisText) }];
+  const result = await stream(apiKey, fusionModelId, writerMessages, onChunk, params);
+  return { fusedContent: result.content, analysisText, judgeError: null, result, skipped: null, model: fusionModelId };
 }
 
 export async function runFusion(params: {
@@ -375,17 +407,20 @@ export async function runFusion(params: {
   messages: { role: string; content: string }[];
   userMessage: string;
   fusionModel: string;
+  runParams?: RunParams;
   onModelChunk: (model: string, chunk: string) => void;
   onModelDone: (model: string, result: StreamResult) => void;
+  onJudgeStart?: () => void;
+  onJudgeDone?: (analysisText: string, judgeEntry: LogEntry | null) => void;
   onFusionChunk: (chunk: string) => void;
   onFusionDone: (outcome: SynthesisOutcome) => void;
 }): Promise<void> {
-  const { apiKey, models, messages, userMessage, fusionModel,
-    onModelChunk, onModelDone, onFusionChunk, onFusionDone } = params;
+  const { apiKey, models, messages, userMessage, fusionModel, runParams,
+    onModelChunk, onModelDone, onJudgeStart, onJudgeDone, onFusionChunk, onFusionDone } = params;
 
   const responses: ModelResponse[] = await Promise.all(
     models.map(async (model) => {
-      const result = await streamCompletion(apiKey, model, messages, (c) => onModelChunk(model, c));
+      const result = await streamCompletion(apiKey, model, messages, (c) => onModelChunk(model, c), runParams);
       onModelDone(model, result);
       return {
         model,
@@ -398,9 +433,9 @@ export async function runFusion(params: {
   );
 
   if (shouldPauseSynthesis(responses)) {
-    onFusionDone({ fusedContent: '', result: null, skipped: 'partial-failure', model: null });
+    onFusionDone({ fusedContent: '', analysisText: '', judgeError: null, result: null, skipped: 'partial-failure', model: null });
     return;
   }
-  const outcome = await runSynthesis(apiKey, fusionModel, models, userMessage, responses, onFusionChunk);
+  const outcome = await runSynthesis({ apiKey, fusionModel, models, userMessage, responses, params: runParams, onJudgeStart, onJudgeDone, onChunk: onFusionChunk });
   onFusionDone(outcome);
 }
