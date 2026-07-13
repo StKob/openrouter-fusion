@@ -1216,3 +1216,249 @@ Checklist to verify live (free guardrail models):
 - Judge uses the SSE streaming path with a no-op `onChunk` — "non-streamed" per spec means "not streamed to the UI"; reusing `streamCompletion` keeps one error/usage/genId pipeline (spec's error-handling section: nothing new).
 - `buildFusionPrompt` and its test are deleted (replaced by judge/writer prompts) — the spec supersedes the old single-call prompt.
 - Mid-series `astro check` breakage (Tasks 4–7) is deliberate and mirrors the failure-handling plan's convention; Task 8 restores and gates it.
+
+---
+
+# Addendum (approved 2026-07-13): per-fusion overrides — Tasks 10–11
+
+Spec Feature 5. The app compiles clean now, so BOTH tasks run the full gates: `npm test` + `npx astro check` (0 errors) + `npm run build`.
+
+### Task 10: resolveRunParams + FusionRun override fields
+
+**Files:**
+- Modify: `src/scripts/storage.ts`
+- Modify: `src/scripts/fusion.ts`
+- Test: `tests/fusion.test.ts`
+
+**Interfaces:**
+- Consumes: `toRunParams`, `RunParams` (Task 2).
+- Produces (Task 11 uses these exact names):
+  - `FusionRun.temperature?: string` and `FusionRun.effort?: 'inherit' | 'off' | 'low' | 'medium' | 'high'` (storage.ts)
+  - `interface RunOverrides { temperature?: string; effort?: 'inherit' | 'off' | 'low' | 'medium' | 'high' }` (fusion.ts)
+  - `resolveRunParams(run: RunOverrides | null | undefined, settings: { temperature: string; effort: RunParams['effort'] }): RunParams`
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/fusion.test.ts` (add `resolveRunParams` to the fusion import):
+
+```ts
+describe('resolveRunParams', () => {
+  const settings = { temperature: '0.5', effort: 'low' as const };
+  it('inherits both when run has no overrides', () => {
+    expect(resolveRunParams(null, settings)).toEqual({ temperature: 0.5, effort: 'low' });
+    expect(resolveRunParams({}, settings)).toEqual({ temperature: 0.5, effort: 'low' });
+    expect(resolveRunParams({ temperature: '', effort: 'inherit' }, settings)).toEqual({ temperature: 0.5, effort: 'low' });
+  });
+  it('run overrides win per-field (temperature 0 is a real override)', () => {
+    expect(resolveRunParams({ temperature: '0', effort: 'high' }, settings)).toEqual({ temperature: 0, effort: 'high' });
+  });
+  it('mixed: one field overrides, the other inherits', () => {
+    expect(resolveRunParams({ temperature: '1.2' }, settings)).toEqual({ temperature: 1.2, effort: 'low' });
+    expect(resolveRunParams({ effort: 'off' }, settings)).toEqual({ temperature: 0.5, effort: 'off' });
+  });
+  it('clamps overrides and treats whitespace as inherit', () => {
+    expect(resolveRunParams({ temperature: '9' }, settings).temperature).toBe(2);
+    expect(resolveRunParams({ temperature: '  ' }, settings).temperature).toBe(0.5);
+  });
+});
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `npm test`
+Expected: FAIL — `resolveRunParams` not exported.
+
+- [ ] **Step 3: Implement**
+
+In `src/scripts/storage.ts`, add to the `FusionRun` interface after `systemPrompt: string;`:
+
+```ts
+  temperature?: string;                                     // per-run override; ''/absent = inherit Settings
+  effort?: 'inherit' | 'off' | 'low' | 'medium' | 'high';   // 'inherit'/absent = inherit Settings
+```
+
+In `src/scripts/fusion.ts`, add directly under `toRunParams`:
+
+```ts
+// Per-run overrides (FusionRun.temperature/effort are structurally compatible)
+export interface RunOverrides {
+  temperature?: string;
+  effort?: 'inherit' | 'off' | 'low' | 'medium' | 'high';
+}
+
+export function resolveRunParams(
+  run: RunOverrides | null | undefined,
+  settings: { temperature: string; effort: RunParams['effort'] }
+): RunParams {
+  return toRunParams({
+    temperature: run?.temperature?.trim() ? run.temperature : settings.temperature,
+    effort: run?.effort && run.effort !== 'inherit' ? run.effort : settings.effort,
+  });
+}
+```
+
+- [ ] **Step 4: Run the full gates**
+
+Run: `npm test` — Expected: PASS (66/66: 62 + 4 new).
+Run: `npx astro check` — Expected: 0 errors.
+Run: `npm run build` — Expected: completes.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/scripts/storage.ts src/scripts/fusion.ts tests/fusion.test.ts
+git commit -m "feat: per-run temperature/effort override fields + resolveRunParams"
+```
+
+### Task 11: Params popup in the run view
+
+**Files:**
+- Modify: `src/pages/index.astro`
+
+**Interfaces:**
+- Consumes: `resolveRunParams` (Task 10), `FusionRun.temperature/effort` (Task 10).
+- Produces: `#btn-run-params` button + `#run-params-popup` popover; `effectiveRunParams()` helper replacing all three `toRunParams(...)` call sites.
+
+- [ ] **Step 1: Markup**
+
+In the model-selector bar, insert AFTER the closing `</div>` of the "Fuse with" block (currently line ~152, the div containing `#fusion-model-select`) and before the bar's closing `</div>`:
+
+```html
+          <!-- Per-fusion sampling overrides -->
+          <div class="relative">
+            <button
+              id="btn-run-params"
+              title="Temperature / reasoning effort for this fusion (defaults from Settings)"
+              class="flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-gray-200 dark:border-or-border text-gray-500 dark:text-or-muted hover:border-or-accent hover:text-or-accent transition-colors"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 001.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+              </svg>
+              Params
+            </button>
+            <div
+              id="run-params-popup"
+              class="hidden absolute top-full mt-1 right-0 w-64 bg-white dark:bg-or-card border border-gray-200 dark:border-or-border rounded-xl shadow-xl z-50 p-3 space-y-3"
+            >
+              <div>
+                <label class="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Temperature (this fusion)</label>
+                <input
+                  id="run-temperature"
+                  type="number" min="0" max="2" step="0.1"
+                  class="w-full px-2.5 py-1.5 text-xs bg-gray-50 dark:bg-or-bg border border-gray-200 dark:border-or-border rounded-lg focus:outline-none focus:ring-2 focus:ring-or-accent text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-or-muted"
+                />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Reasoning effort (this fusion)</label>
+                <select
+                  id="run-effort"
+                  class="w-full px-2.5 py-1.5 text-xs bg-gray-50 dark:bg-or-bg border border-gray-200 dark:border-or-border rounded-lg focus:outline-none focus:ring-2 focus:ring-or-accent text-gray-900 dark:text-white"
+                >
+                  <option value="inherit">Default (from Settings)</option>
+                  <option value="off">Off</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </div>
+              <p class="text-[11px] text-gray-400 dark:text-or-muted">Empty temperature = Settings default. Applies to panel, judge, and writer calls of this fusion.</p>
+            </div>
+          </div>
+```
+
+- [ ] **Step 2: Script wiring**
+
+Import line: replace `toRunParams` with `resolveRunParams` in the fusion import (index.astro ~line 325) — after this task nothing in index.astro uses `toRunParams`.
+
+Element refs (next to the other refs):
+
+```ts
+  const $btnRunParams = document.getElementById('btn-run-params') as HTMLButtonElement;
+  const $runParamsPopup = document.getElementById('run-params-popup')!;
+  const $runTemperature = document.getElementById('run-temperature') as HTMLInputElement;
+  const $runEffort = document.getElementById('run-effort') as HTMLSelectElement;
+```
+
+Helper (place near `updateRunAddedMainBtn`):
+
+```ts
+  // Per-run overrides win over Settings defaults; empty/inherit falls through
+  function effectiveRunParams() {
+    return resolveRunParams(activeRun, getSettings());
+  }
+```
+
+Replace all three call sites:
+- `streamModelIntoTurn`: `toRunParams(getSettings())` → `effectiveRunParams()`
+- `sendMessage`'s runFusion: `runParams: toRunParams(settings),` → `runParams: effectiveRunParams(),`
+- retry-fusion handler: `params: toRunParams(settings),` → `params: effectiveRunParams(),`
+
+Popup toggle + populate placeholder on open (place near the btn-add-model handler):
+
+```ts
+  $btnRunParams.addEventListener('click', () => {
+    $runTemperature.placeholder = getSettings().temperature || 'default';
+    $runParamsPopup.classList.toggle('hidden');
+  });
+```
+
+Extend the existing document outside-click listener (the one closing `$modelDropdown`) with, after the model-dropdown check:
+
+```ts
+    if (!$btnRunParams.contains(t) && !$runParamsPopup.contains(t)) {
+      $runParamsPopup.classList.add('hidden');
+    }
+```
+
+Persist on change (place near the `$systemPrompt` change listener):
+
+```ts
+  $runTemperature.addEventListener('change', () => {
+    if (!activeRun) return;
+    activeRun.temperature = $runTemperature.value.trim();
+    saveRun(activeRun);
+  });
+  $runEffort.addEventListener('change', () => {
+    if (!activeRun) return;
+    activeRun.effort = $runEffort.value as FusionRun['effort'];
+    saveRun(activeRun);
+  });
+```
+
+Populate in `showRun` (after `$systemPrompt.value = run.systemPrompt;`):
+
+```ts
+    $runTemperature.value = run.temperature ?? '';
+    $runEffort.value = run.effort ?? 'inherit';
+```
+
+Reset in `startNewRun` (after `$systemPrompt.value = '';`):
+
+```ts
+    $runTemperature.value = '';
+    $runEffort.value = 'inherit';
+```
+
+Settings modal helper text: change the Sampling block's `<p>` to:
+
+```html
+          <p class="mt-1 text-xs text-gray-400 dark:text-or-muted">Defaults for every call — panel, judge, writer. Override per fusion via the Params button. Empty / Off = provider default.</p>
+```
+
+- [ ] **Step 3: Run the full gates**
+
+Run: `npm test` — Expected: PASS (66/66, unchanged from Task 10).
+Run: `npx astro check` — Expected: 0 errors (pre-existing hints acceptable).
+Run: `npm run build` — Expected: completes.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/pages/index.astro
+git commit -m "feat: per-fusion params popup overriding settings defaults"
+```
+
+### Task 9 E2E additions (for the manual session)
+
+- Params popup opens/closes (outside click too), persists across reload, run override visible in request bodies while Settings holds a different default, Default/empty falls back to Settings values, old runs (no override fields) inherit cleanly.

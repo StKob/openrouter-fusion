@@ -61,6 +61,16 @@ Delete the hardcoded `PRESETS` constant. New pure function `computePresets(model
 
 Computed once after `fetchModels` succeeds. Preset buttons (`index.astro:746`) read the computed arrays and no-op before models load or if the fetch failed. Initial `selectedModels` (`index.astro:305`) changes from `[...PRESETS.quality]` to the persisted selection if present, else empty; the computed quality preset is auto-applied when models arrive **only if the selection is still empty** (a persisted selection is never overwritten).
 
+## Feature 5 — per-fusion temperature/effort overrides (addendum, approved 2026-07-13)
+
+The Settings-modal fields (Feature 2) become **defaults**; each fusion run can override them from a popup.
+
+- **Storage**: `FusionRun` gains `temperature?: string` (`''`/absent = inherit the Settings default) and `effort?: 'inherit' | 'off' | 'low' | 'medium' | 'high'` (`'inherit'`/absent = inherit). Old saved runs have neither → inherit. Persisted via the existing `saveRun`.
+- **Resolution**: pure `resolveRunParams(run, settings): RunParams` in fusion.ts — per-field: run override wins when present (non-blank temperature; effort ≠ `'inherit'`), else the Settings value; the merged pair feeds `toRunParams` (clamping unchanged). Unit-tested.
+- **UI**: a **Params** button in the model-selector bar (right of "Fuse with") toggles a small popup — same pattern as the model dropdown (hidden-class toggle, closes on outside click) — containing a temperature number input (empty = inherit; placeholder shows the current default) and an effort select with Default (inherit)/Off/Low/Medium/High. Changes save onto the run immediately and apply from the next call. Settings helper text updated to say the fields are defaults, overridable per fusion.
+- **Call sites**: the three `toRunParams(...)` uses in index.astro are replaced by one `effectiveRunParams()` helper = `resolveRunParams(activeRun, getSettings())`.
+- **Known limit, accepted**: an empty run-temperature means "inherit", so a run cannot force provider-default while a global temperature is set (effort can, via Off).
+
 ## Out of scope
 
 - Panel web tools (`:online` / Exa web_search & web_fetch) and the bash tool — billing and guardrail-model support; `:online` already reachable via custom model id.
