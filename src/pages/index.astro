@@ -322,14 +322,15 @@ import Layout from '../layouts/Layout.astro';
 <script>
   import { getSettings, saveSettings, getRuns, saveRun, deleteRun, createRun, formatDate, formatUsage, runToMarkdown, runFilename } from '../scripts/storage';
   import type { FusionRun, Turn, Settings, ModelResponse } from '../scripts/storage';
-  import { fetchModels, runFusion, runSynthesis, streamCompletion, buildMessages, buildLogEntry, formatPricePer1M, PRESETS, clearModelCache, toRunParams } from '../scripts/fusion';
-  import type { ORModel } from '../scripts/fusion';
+  import { fetchModels, runFusion, runSynthesis, streamCompletion, buildMessages, buildLogEntry, formatPricePer1M, computePresets, MAX_MODELS, clearModelCache, toRunParams } from '../scripts/fusion';
+  import type { ORModel, Presets } from '../scripts/fusion';
   import { initTheme, toggleTheme, applyTheme } from '../scripts/theme';
   import { diskSupported, pickFolder, diskState, reenableDisk, writeRunFile } from '../scripts/disksave';
 
   // ─── State ────────────────────────────────────────────────────────────────────
   let activeRun: FusionRun | null = null;
-  let selectedModels: string[] = [...PRESETS.quality];
+  let selectedModels: string[] = [];
+  let presets: Presets = { quality: [], budget: [] };
   let activePreset: string = 'quality';
   let allModels: ORModel[] = [];
   let isStreaming = false;
@@ -689,6 +690,8 @@ import Layout from '../layouts/Layout.astro';
     renderAllTurns();
     updateRunAddedMainBtn();
     scrollBottom();
+    const s = getSettings();
+    if (s.apiKey && allModels.length === 0) loadModels(s.apiKey);
   }
 
   function startNewRun() {
@@ -780,9 +783,12 @@ import Layout from '../layouts/Layout.astro';
   document.querySelectorAll('.preset-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       const preset = (btn as HTMLElement).getAttribute('data-preset')!;
+      // No-op until the live model list has produced presets (fetch pending or failed)
+      if (preset === 'quality' && presets.quality.length === 0) return;
+      if (preset === 'budget' && presets.budget.length === 0) return;
       activePreset = preset;
-      if (preset === 'quality') selectedModels = [...PRESETS.quality];
-      else if (preset === 'budget') selectedModels = [...PRESETS.budget];
+      if (preset === 'quality') selectedModels = [...presets.quality];
+      else if (preset === 'budget') selectedModels = [...presets.budget];
       // custom: keep current selection
       renderPresetTabs(preset);
       renderModelChips();
@@ -817,7 +823,7 @@ import Layout from '../layouts/Layout.astro';
 
   // ─── Model dropdown ───────────────────────────────────────────────────────────
   document.getElementById('btn-add-model')!.addEventListener('click', async () => {
-    if (selectedModels.length >= 4) return;
+    if (selectedModels.length >= MAX_MODELS) return;
     $modelDropdown.classList.toggle('hidden');
     if (!$modelDropdown.classList.contains('hidden')) {
       $modelSearch.focus();
@@ -847,6 +853,16 @@ import Layout from '../layouts/Layout.astro';
     try {
       allModels = await fetchModels(apiKey);
       populateFusionModelSelect(allModels);
+      presets = computePresets(allModels);
+      // Auto-apply quality once models arrive — but never overwrite a non-empty selection
+      if (selectedModels.length === 0 && presets.quality.length > 0) {
+        selectedModels = [...presets.quality];
+        activePreset = 'quality';
+        renderPresetTabs('quality');
+        renderModelChips();
+        if (activeRun) { activeRun.models = [...selectedModels]; saveRun(activeRun); }
+        refreshLastTurnControls();
+      }
     } catch (err) {
       console.warn('Failed to load models', err);
     }
@@ -908,10 +924,10 @@ import Layout from '../layouts/Layout.astro';
     const id = btn.getAttribute('data-model-id')!;
     if (selectedModels.includes(id)) {
       selectedModels = selectedModels.filter((x) => x !== id); // toggle off
-    } else if (selectedModels.length < 4) {
+    } else if (selectedModels.length < MAX_MODELS) {
       selectedModels.push(id);
     } else {
-      return; // at the 4-model cap
+      return; // at the MAX_MODELS cap
     }
     activePreset = 'custom';
     renderPresetTabs('custom');
@@ -1151,7 +1167,7 @@ import Layout from '../layouts/Layout.astro';
             if (fusedEl) fusedEl.innerHTML = '<span class="text-xs text-gray-400 dark:text-or-muted">Judging responses…</span> <span class="animate-blink text-or-accent">▌</span>';
           },
           onJudgeDone: (analysisText, judgeEntry) => {
-            if (judgeEntry) turn.calls.push(judgeEntry);
+            if (judgeEntry) turn.calls!.push(judgeEntry);
             if (analysisText) turn.judgeAnalysis = analysisText;
             persist('partial');
           },

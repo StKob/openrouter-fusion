@@ -80,6 +80,8 @@ export interface Presets {
   budget: string[];
 }
 
+export const MAX_MODELS = 8; // OpenRouter Fusion allows 1–8 panel models
+
 const modelPrice = (m: ORModel) => {
   const p = parseFloat(m.pricing?.prompt ?? '0') + parseFloat(m.pricing?.completion ?? '0');
   return Number.isFinite(p) ? p : 0;
