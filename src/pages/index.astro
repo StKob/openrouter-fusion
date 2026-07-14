@@ -150,6 +150,48 @@ import Layout from '../layouts/Layout.astro';
               <option value="auto">Auto (first source)</option>
             </select>
           </div>
+
+          <!-- Per-fusion sampling overrides -->
+          <div class="relative">
+            <button
+              id="btn-run-params"
+              title="Temperature / reasoning effort for this fusion (defaults from Settings)"
+              class="flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-gray-200 dark:border-or-border text-gray-500 dark:text-or-muted hover:border-or-accent hover:text-or-accent transition-colors"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 001.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+              </svg>
+              Params
+            </button>
+            <div
+              id="run-params-popup"
+              class="hidden absolute top-full mt-1 right-0 w-64 bg-white dark:bg-or-card border border-gray-200 dark:border-or-border rounded-xl shadow-xl z-50 p-3 space-y-3"
+            >
+              <div>
+                <label class="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Temperature (this fusion)</label>
+                <input
+                  id="run-temperature"
+                  type="number" min="0" max="2" step="0.1"
+                  class="w-full px-2.5 py-1.5 text-xs bg-gray-50 dark:bg-or-bg border border-gray-200 dark:border-or-border rounded-lg focus:outline-none focus:ring-2 focus:ring-or-accent text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-or-muted"
+                />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Reasoning effort (this fusion)</label>
+                <select
+                  id="run-effort"
+                  class="w-full px-2.5 py-1.5 text-xs bg-gray-50 dark:bg-or-bg border border-gray-200 dark:border-or-border rounded-lg focus:outline-none focus:ring-2 focus:ring-or-accent text-gray-900 dark:text-white"
+                >
+                  <option value="inherit">Default (from Settings)</option>
+                  <option value="off">Off</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </div>
+              <p class="text-[11px] text-gray-400 dark:text-or-muted">Empty temperature = Settings default. Applies to panel, judge, and writer calls of this fusion.</p>
+            </div>
+          </div>
         </div>
 
         <!-- System prompt -->
@@ -278,7 +320,7 @@ import Layout from '../layouts/Layout.astro';
               </select>
             </div>
           </div>
-          <p class="mt-1 text-xs text-gray-400 dark:text-or-muted">Applied to every call — panel models, judge, and writer. Empty / Off = provider default.</p>
+          <p class="mt-1 text-xs text-gray-400 dark:text-or-muted">Defaults for every call — panel, judge, writer. Override per fusion via the Params button. Empty / Off = provider default.</p>
         </div>
 
         <!-- Theme -->
@@ -322,7 +364,7 @@ import Layout from '../layouts/Layout.astro';
 <script>
   import { getSettings, saveSettings, getRuns, saveRun, deleteRun, createRun, formatDate, formatUsage, runToMarkdown, runFilename } from '../scripts/storage';
   import type { FusionRun, Turn, Settings, ModelResponse } from '../scripts/storage';
-  import { fetchModels, runFusion, runSynthesis, streamCompletion, buildMessages, buildLogEntry, formatPricePer1M, computePresets, MAX_MODELS, clearModelCache, toRunParams } from '../scripts/fusion';
+  import { fetchModels, runFusion, runSynthesis, streamCompletion, buildMessages, buildLogEntry, formatPricePer1M, computePresets, MAX_MODELS, clearModelCache, resolveRunParams } from '../scripts/fusion';
   import type { ORModel, Presets } from '../scripts/fusion';
   import { initTheme, toggleTheme, applyTheme } from '../scripts/theme';
   import { diskSupported, pickFolder, diskState, reenableDisk, writeRunFile } from '../scripts/disksave';
@@ -363,6 +405,10 @@ import Layout from '../layouts/Layout.astro';
   const $settingsFusionModel = document.getElementById('settings-fusion-model') as HTMLSelectElement;
   const $settingsTemperature = document.getElementById('settings-temperature') as HTMLInputElement;
   const $settingsEffort = document.getElementById('settings-effort') as HTMLSelectElement;
+  const $btnRunParams = document.getElementById('btn-run-params') as HTMLButtonElement;
+  const $runParamsPopup = document.getElementById('run-params-popup')!;
+  const $runTemperature = document.getElementById('run-temperature') as HTMLInputElement;
+  const $runEffort = document.getElementById('run-effort') as HTMLSelectElement;
 
   // Initial render — must run after the element refs above (const TDZ; upstream
   // called these before the refs and crashed init on load)
@@ -566,6 +612,11 @@ import Layout from '../layouts/Layout.astro';
     el.textContent = total > 0 ? `turn total $${total.toFixed(4)}` : '';
   }
 
+  // Per-run overrides win over Settings defaults; empty/inherit falls through
+  function effectiveRunParams() {
+    return resolveRunParams(activeRun, getSettings());
+  }
+
   // Show/hide the composer's "Run N added" button from current state
   function updateRunAddedMainBtn() {
     const btn = document.getElementById('btn-run-added-main')!;
@@ -656,7 +707,7 @@ import Layout from '../layouts/Layout.astro';
       upsertResponse(turn, model, { model, content: buffer });
       if (contentEl) contentEl.innerHTML = renderMarkdownLite(buffer) + '<span class="animate-blink">▌</span>';
       throttledPartialSave();
-    }, toRunParams(getSettings()));
+    }, effectiveRunParams());
     upsertResponse(turn, model, {
       model,
       content: result.content,
@@ -685,6 +736,8 @@ import Layout from '../layouts/Layout.astro';
     $welcome.classList.add('hidden');
     $run.classList.remove('hidden');
     $systemPrompt.value = run.systemPrompt;
+    $runTemperature.value = run.temperature ?? '';
+    $runEffort.value = run.effort ?? 'inherit';
     renderPresetTabs(activePreset);
     renderModelChips();
     renderAllTurns();
@@ -707,6 +760,8 @@ import Layout from '../layouts/Layout.astro';
     $welcome.classList.add('hidden');
     $run.classList.remove('hidden');
     $systemPrompt.value = '';
+    $runTemperature.value = '';
+    $runEffort.value = 'inherit';
     $turnsContainer.innerHTML = '';
     renderPresetTabs(activePreset);
     renderModelChips();
@@ -835,6 +890,11 @@ import Layout from '../layouts/Layout.astro';
     }
   });
 
+  $btnRunParams.addEventListener('click', () => {
+    $runTemperature.placeholder = getSettings().temperature || 'default';
+    $runParamsPopup.classList.toggle('hidden');
+  });
+
   document.addEventListener('click', (e) => {
     const t = e.target as Node;
     // A click that re-rendered its own target (list toggle) detaches it from the
@@ -842,6 +902,9 @@ import Layout from '../layouts/Layout.astro';
     if (!(t as HTMLElement).isConnected) return;
     if (!document.getElementById('btn-add-model')!.contains(t) && !$modelDropdown.contains(t)) {
       $modelDropdown.classList.add('hidden');
+    }
+    if (!$btnRunParams.contains(t) && !$runParamsPopup.contains(t)) {
+      $runParamsPopup.classList.add('hidden');
     }
   });
 
@@ -987,6 +1050,17 @@ import Layout from '../layouts/Layout.astro';
     }
   });
 
+  $runTemperature.addEventListener('change', () => {
+    if (!activeRun) return;
+    activeRun.temperature = $runTemperature.value.trim();
+    saveRun(activeRun);
+  });
+  $runEffort.addEventListener('change', () => {
+    if (!activeRun) return;
+    activeRun.effort = $runEffort.value as FusionRun['effort'];
+    saveRun(activeRun);
+  });
+
   // ─── Send message ─────────────────────────────────────────────────────────────
   $btnSend.addEventListener('click', sendMessage);
 
@@ -1051,7 +1125,7 @@ import Layout from '../layouts/Layout.astro';
         messages,
         userMessage: message,
         fusionModel: $fusionModelSelect.value || settings.fusionModel || 'auto',
-        runParams: toRunParams(settings),
+        runParams: effectiveRunParams(),
         onJudgeStart: () => {
           const el = turnEl.querySelector('[data-fused-content]');
           if (el) el.innerHTML = '<span class="text-xs text-gray-400 dark:text-or-muted">Judging responses…</span> <span class="animate-blink text-or-accent">▌</span>';
@@ -1161,7 +1235,7 @@ import Layout from '../layouts/Layout.astro';
           models: activeRun.models,
           userMessage: turn.userMessage,
           responses: turn.modelResponses,
-          params: toRunParams(settings),
+          params: effectiveRunParams(),
           existingAnalysis: turn.judgeAnalysis ?? null,
           onJudgeStart: () => {
             if (fusedEl) fusedEl.innerHTML = '<span class="text-xs text-gray-400 dark:text-or-muted">Judging responses…</span> <span class="animate-blink text-or-accent">▌</span>';
